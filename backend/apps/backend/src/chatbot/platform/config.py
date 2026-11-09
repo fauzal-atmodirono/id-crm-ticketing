@@ -681,7 +681,10 @@ class Settings(BaseSettings):
     # Test console "Demo" tab + `python -m chatbot.features.demo.seed`: seed /
     # reset the [DEMO] phone personas (contacts, history, Farid's RSA
     # incident). Off (default) = no /demo/* route and the CLI refuses. Reset
-    # only ever removes records named "[DEMO] ..." / labelled demo_persona.
+    # only removes records the seeder created (features/demo/safety.py);
+    # deletes need an administrator CHATWOOT_API_TOKEN. Seeded cases show in
+    # native Chatwoot reports until Reset (METRICS_EXCLUDE_DEMO_SEED drops
+    # them from the BigQuery sync only).
     demo_console_enabled: bool = False
     # API inbox the demo conversations go to; 0 = CHATWOOT_INBOX_ID. Must be
     # a Channel::Api inbox (checked before every seed/reset).

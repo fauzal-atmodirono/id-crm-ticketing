@@ -3,15 +3,29 @@
 Not the shared ``ChatwootAdapter``: that one is fail-open (a failed call
 returns ``None`` and the caller carries on), which is right for a live chat
 and wrong for a seeder, where an operator needs to see a failure. It also
-has no notion of "demo record". This client raises ``ChatwootError`` on any
+has no notion of ownership. This client raises ``ChatwootError`` on any
 non-2xx, and every write that targets an EXISTING record first re-reads
-that record and runs a ``safety.assert_*`` check on the fresh copy -- so the
-seeder cannot write to, or delete, anything that is not a demo record, even
-if the caller passes a wrong id. Creates are constrained too: a contact name
-must start with ``[DEMO] ``, a conversation must hang off a ``[DEMO]``
-contact with a ``demo-`` source id (never ``whatsapp-...``, which the
-backend would relay to WhatsApp), and message text must start with
-``[DEMO]``.
+that record and applies the ``safety`` ownership rules to the fresh copy --
+so it cannot write to, or delete, anything this seeder does not own, even
+if the caller passes a wrong id:
+
+* a conversation that is not marker-stamped is ours only if it is on the
+  demo inbox AND its contact -- re-read fresh by id -- is ours;
+* a contact is deleted only if EVERY one of its conversations is ours
+  (Chatwoot destroys a contact's conversations with it, on any inbox). The
+  contact conversations endpoint returns at most 20 and has no paging, so
+  a contact at that cap is refused rather than half-checked.
+
+Creates are constrained too: a contact must have a ``[DEMO] `` name and a
+persona number (the ``demo_seed`` marker is stamped here); a conversation
+must hang off one of our contacts, on the demo inbox, with a ``demo-``
+source id (never ``whatsapp-...``, which the backend relays to WhatsApp);
+message text must start with ``[DEMO]``; no ``escalate``/``dealer_*``
+label is ever applied.
+
+Deletes need an ADMINISTRATOR Chatwoot token, and Chatwoot deletes
+conversations asynchronously (a background job), so a deleted conversation
+can still be listed for a moment.
 
 The token is sent in both header spellings, like ``ChatwootAdapter``, and is
 never logged or put in an error message.
@@ -19,23 +33,27 @@ never logged or put in an error message.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 import httpx
 import structlog
 
+from chatbot.features.demo.personas import seeded_numbers
 from chatbot.features.demo.safety import (
     CREATABLE_LABELS,
-    DEMO_LABEL,
+    DEMO_SEED_MARKER,
     DEMO_SOURCE_PREFIX,
-    FORBIDDEN_SEED_LABELS,
     DemoSafetyError,
-    assert_demo_contact,
-    assert_demo_conversation,
     assert_demo_text,
     conversation_labels,
-    is_demo_contact,
+    conversation_sender,
+    forbidden_labels,
+    has_demo_name,
+    has_seeder_markers,
+    is_seeder_contact,
+    is_seeder_conversation,
 )
 
 if TYPE_CHECKING:
@@ -45,6 +63,8 @@ _log = structlog.get_logger(__name__)
 
 _MAX_PAGES = 5
 _STATUSES = frozenset({"open", "resolved", "pending", "snoozed"})
+# Chatwoot's GET /contacts/{id}/conversations returns at most this many.
+CONTACT_CONVERSATIONS_CAP = 20
 
 
 class ChatwootError(RuntimeError):
@@ -74,8 +94,11 @@ class DemoCrmClient:
         *,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: float = 15.0,
+        numbers: Iterable[str] | None = None,
     ) -> None:
         token = settings.chatwoot_api_token
+        self.inbox_id = int(settings.demo_inbox_id or settings.chatwoot_inbox_id or 0)
+        self.numbers = tuple(numbers) if numbers is not None else seeded_numbers()
         self._client = httpx.AsyncClient(
             base_url=(
                 f"{settings.chatwoot_api_url.rstrip('/')}/api/v1/accounts/{settings.chatwoot_account_id}"
@@ -89,13 +112,24 @@ class DemoCrmClient:
         await self._client.aclose()
 
     async def _call(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
+        where = path.split("?", maxsplit=1)[0]
         try:
             res = await self._client.request(method, path, json=body)
         except httpx.HTTPError as exc:
-            raise ChatwootError(f"{method} {path.split('?', maxsplit=1)[0]}: {type(exc).__name__}") from exc
+            raise ChatwootError(f"{method} {where}: {type(exc).__name__}") from exc
         if res.status_code >= 400:  # noqa: PLR2004
-            raise ChatwootError(f"{method} {path.split('?', maxsplit=1)[0]} -> HTTP {res.status_code}")
+            raise ChatwootError(f"{method} {where} -> HTTP {res.status_code}")
         return res.json() if res.content else {}
+
+    # --- ownership (pure, on records already in hand) ---------------------------
+
+    def owns_contact(self, contact: Any) -> bool:
+        return is_seeder_contact(contact, self.numbers)
+
+    def owns_conversation(self, conv: Any, sender: dict[str, Any] | None = None) -> bool:
+        return is_seeder_conversation(
+            conv, inbox_id=self.inbox_id, numbers=self.numbers, sender=sender
+        )
 
     # --- reads -----------------------------------------------------------------
 
@@ -156,15 +190,30 @@ class DemoCrmClient:
 
     # --- guarded fresh reads ------------------------------------------------------
 
-    async def _demo_contact(self, contact_id: int) -> dict[str, Any]:
+    async def _owned_contact(self, contact_id: int) -> dict[str, Any]:
         contact = await self.get_contact(contact_id)
-        assert_demo_contact(contact, contact_id)
-        return contact  # type: ignore[return-value]  # assert_demo_contact rejects None
+        if contact is None or not self.owns_contact(contact):
+            raise DemoSafetyError(
+                f"contact {contact_id} is not a contact this seeder created "
+                "([DEMO] name + demo_seed=demo_persona + persona number); refusing to touch it"
+            )
+        return contact
 
-    async def _demo_conversation(self, conversation_id: int) -> dict[str, Any]:
+    async def _owned_conversation(self, conversation_id: int) -> dict[str, Any]:
         conv = await self.get_conversation(conversation_id)
-        assert_demo_conversation(conv, conversation_id)
-        return conv  # type: ignore[return-value]  # assert_demo_conversation rejects None
+        if conv is not None and not has_seeder_markers(conv):
+            # Unmarked (e.g. a rehearsal call): decide on a FRESH read of
+            # its contact, not the copy embedded in the conversation.
+            sender = conversation_sender(conv)
+            sender_id = sender.get("id") if sender else None
+            fresh = await self.get_contact(int(sender_id)) if sender_id is not None else None
+            if self.owns_conversation(conv, sender=fresh or {}):
+                return conv
+        elif conv is not None:
+            return conv
+        raise DemoSafetyError(
+            f"conversation {conversation_id} is not one this seeder owns; refusing to touch it"
+        )
 
     # --- guarded writes ------------------------------------------------------------
 
@@ -186,8 +235,12 @@ class DemoCrmClient:
     async def create_contact(
         self, name: str, phone_number: str, custom_attributes: dict[str, Any], *, inbox_id: int
     ) -> dict[str, Any]:
-        if not is_demo_contact({"name": name}):
-            raise DemoSafetyError("a demo contact name must start with '[DEMO] '")
+        attrs = {**custom_attributes, "demo_seed": DEMO_SEED_MARKER}
+        candidate = {"name": name, "phone_number": phone_number, "custom_attributes": attrs}
+        if not has_demo_name(candidate) or not self.owns_contact(candidate):
+            raise DemoSafetyError(
+                "a demo contact needs a '[DEMO] ' name and one of the persona numbers"
+            )
         data = await self._call(
             "POST",
             "/contacts",
@@ -195,7 +248,7 @@ class DemoCrmClient:
                 "inbox_id": inbox_id,
                 "name": name,
                 "phone_number": phone_number,
-                "custom_attributes": custom_attributes,
+                "custom_attributes": attrs,
             },
         )
         contact = _unwrap_contact(data)
@@ -206,12 +259,32 @@ class DemoCrmClient:
     async def update_contact_attributes(
         self, contact_id: int, custom_attributes: dict[str, Any]
     ) -> None:
-        await self._demo_contact(contact_id)
+        if custom_attributes.get("demo_seed", DEMO_SEED_MARKER) != DEMO_SEED_MARKER:
+            raise DemoSafetyError("the demo_seed marker cannot be changed")
+        await self._owned_contact(contact_id)
         # PUT /contacts MERGES custom_attributes (unlike conversations).
         await self._call("PUT", f"/contacts/{contact_id}", {"custom_attributes": custom_attributes})
 
     async def delete_contact(self, contact_id: int) -> None:
-        await self._demo_contact(contact_id)
+        """Delete one of our contacts -- only when every conversation it has
+        is ours too (the delete takes them all, on every inbox)."""
+        await self._owned_contact(contact_id)
+        convs = await self.contact_conversations(contact_id)
+        if len(convs) >= CONTACT_CONVERSATIONS_CAP:
+            raise DemoSafetyError(
+                f"contact {contact_id} has {len(convs)}+ conversations, more than can be "
+                "verified; not deleting it"
+            )
+        for conv in convs:
+            if conv.get("id") is None:
+                raise DemoSafetyError(f"contact {contact_id} has an unreadable conversation")
+            try:
+                await self._owned_conversation(int(conv["id"]))
+            except DemoSafetyError as exc:
+                raise DemoSafetyError(
+                    f"contact {contact_id} has conversation {conv['id']} this seeder does not "
+                    "own; not deleting the contact"
+                ) from exc
         await self._call("DELETE", f"/contacts/{contact_id}")
 
     async def create_conversation(
@@ -227,7 +300,9 @@ class DemoCrmClient:
             raise DemoSafetyError(
                 f"a demo conversation source id must start with {DEMO_SOURCE_PREFIX!r}"
             )
-        await self._demo_contact(contact_id)
+        if not self.inbox_id or inbox_id != self.inbox_id:
+            raise DemoSafetyError(f"demo conversations go to the demo inbox {self.inbox_id} only")
+        await self._owned_contact(contact_id)
         data = await self._call(
             "POST",
             "/conversations",
@@ -235,7 +310,7 @@ class DemoCrmClient:
                 "source_id": source_id,
                 "inbox_id": inbox_id,
                 "contact_id": contact_id,
-                "custom_attributes": custom_attributes,
+                "custom_attributes": {**custom_attributes, "demo_seed": DEMO_SEED_MARKER},
                 "additional_attributes": additional_attributes or {},
             },
         )
@@ -246,10 +321,10 @@ class DemoCrmClient:
     async def add_labels(self, conversation_id: int, labels: list[str]) -> list[str]:
         """Union ``labels`` into the conversation's set (the endpoint REPLACES
         the set, so the current labels are read and kept)."""
-        bad = FORBIDDEN_SEED_LABELS.intersection(labels)
+        bad = forbidden_labels(labels)
         if bad:
-            raise DemoSafetyError(f"the seeder never applies {sorted(bad)}")
-        conv = await self._demo_conversation(conversation_id)
+            raise DemoSafetyError(f"the seeder never applies {bad}")
+        conv = await self._owned_conversation(conversation_id)
         union = list(dict.fromkeys([*conversation_labels(conv), *labels]))
         await self._call("POST", f"/conversations/{conversation_id}/labels", {"labels": union})
         return union
@@ -257,14 +332,14 @@ class DemoCrmClient:
     async def set_status(self, conversation_id: int, status: str) -> None:
         if status not in _STATUSES:
             raise ValueError(f"unknown conversation status {status!r}")
-        await self._demo_conversation(conversation_id)
+        await self._owned_conversation(conversation_id)
         await self._call(
             "POST", f"/conversations/{conversation_id}/toggle_status", {"status": status}
         )
 
     async def post_incoming_message(self, conversation_id: int, text: str) -> None:
         assert_demo_text(text)
-        await self._demo_conversation(conversation_id)
+        await self._owned_conversation(conversation_id)
         await self._call(
             "POST",
             f"/conversations/{conversation_id}/messages",
@@ -272,8 +347,8 @@ class DemoCrmClient:
         )
 
     async def delete_conversation(self, conversation_id: int) -> None:
-        await self._demo_conversation(conversation_id)
+        await self._owned_conversation(conversation_id)
         await self._call("DELETE", f"/conversations/{conversation_id}")
 
 
-__all__ = ["DEMO_LABEL", "ChatwootError", "DemoCrmClient"]
+__all__ = ["CONTACT_CONVERSATIONS_CAP", "ChatwootError", "DemoCrmClient"]

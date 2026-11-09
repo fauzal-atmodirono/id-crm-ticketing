@@ -25,6 +25,12 @@ async function load(): Promise<void> {
 }
 
 async function seed(): Promise<void> {
+  if (
+    !window.confirm(
+      'Create the [DEMO] persona contacts, conversations and RSA incident on this tenant (live CRM)?',
+    )
+  )
+    return
   busy.value = 'seed'
   error.value = ''
   message.value = ''
@@ -45,7 +51,12 @@ async function seed(): Promise<void> {
 }
 
 async function reset(): Promise<void> {
-  if (!window.confirm('Remove every [DEMO] record (demo_persona label / "[DEMO]" name) and seed again?')) return
+  if (
+    !window.confirm(
+      'Remove the records this seeder created (other [DEMO] data is never touched) and seed again?',
+    )
+  )
+    return
   busy.value = 'reset'
   error.value = ''
   message.value = ''

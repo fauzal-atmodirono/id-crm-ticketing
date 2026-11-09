@@ -25,6 +25,8 @@ from chatbot.platform.config import Settings
 API = "http://chatwoot.test"
 ACCOUNT = 7
 INBOX = 42
+WHATSAPP_INBOX = 3
+CONTACT_CONVERSATIONS_CAP = 20
 
 
 @dataclass
@@ -61,12 +63,17 @@ class FakeChatwoot:
         return cid
 
     def add_conversation(
-        self, contact_id: int, labels: list[str] | None = None, status: str = "open", **attrs: Any
+        self,
+        contact_id: int,
+        labels: list[str] | None = None,
+        status: str = "open",
+        inbox: int = INBOX,
+        **attrs: Any,
     ) -> int:
         vid = self._id()
         self.conversations[vid] = {
             "id": vid,
-            "inbox_id": INBOX,
+            "inbox_id": inbox,
             "contact_id": contact_id,
             "status": status,
             "labels": list(labels or []),
@@ -76,6 +83,10 @@ class FakeChatwoot:
             "created_at": vid,
         }
         return vid
+
+    def add_persona_contact(self, name: str, phone: str, **attrs: Any) -> int:
+        """A contact exactly as the seeder makes one (strict demo rule)."""
+        return self.add_contact(name, phone, demo_seed="demo_persona", **attrs)
 
     def mutations(self) -> list[Call]:
         return [c for c in self.calls if c.method != "GET" and not c.path.endswith("/filter")]
@@ -158,7 +169,8 @@ class FakeChatwoot:
             convs = [
                 self._conv_json(c) for c in self.conversations.values() if c["contact_id"] == cid
             ]
-            return ok({"payload": convs})
+            # Chatwoot's contact conversations endpoint returns at most 20.
+            return ok({"payload": convs[:CONTACT_CONVERSATIONS_CAP]})
         if method == "POST" and path == "/conversations/filter":
             page = int((query.get("page") or ["1"])[0])
             rule = body["payload"][0]

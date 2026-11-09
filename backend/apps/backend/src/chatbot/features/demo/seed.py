@@ -9,7 +9,9 @@ Uses the backend's own settings (the tenant env file), so on the VM it runs
 inside the tenant's backend container and targets exactly that tenant's
 Chatwoot account / API inbox. Refuses unless ``DEMO_CONSOLE_ENABLED=true``
 -- the same switch as the Demo tab -- so it cannot be run by accident on a
-tenant that never opted in. Prints the target (Chatwoot host, account,
+tenant that never opted in. CHATWOOT_API_TOKEN must be an ADMINISTRATOR
+token for reset (Chatwoot only lets admins delete contacts/conversations;
+conversation deletes run asynchronously). Prints the target (Chatwoot host, account,
 inbox), never the token. Exit codes: 0 done, 1 not confirmed, 2 flag off,
 3 refused by a safety check, 4 CRM error.
 """
@@ -75,7 +77,10 @@ def main(
     host = urlparse(settings.chatwoot_api_url).netloc or settings.chatwoot_api_url
     print(f"Demo {action}: Chatwoot {host}, account {settings.chatwoot_account_id}, inbox {inbox}")
     if action != "status" and not args.yes:
-        answer = input(f"Type {action.upper()} to {action} the [DEMO] personas: ")
+        try:
+            answer = input(f"Type {action.upper()} to {action} the [DEMO] personas: ")
+        except EOFError:  # no terminal (e.g. `exec -T` without --yes)
+            answer = ""
         if answer.strip() != action.upper():
             print("Not confirmed; nothing written.")
             return 1

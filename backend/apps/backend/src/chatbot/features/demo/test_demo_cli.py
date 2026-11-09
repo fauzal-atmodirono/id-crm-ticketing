@@ -72,3 +72,14 @@ def test_safety_refusal_exits_nonzero(settings: Settings, fake: FakeChatwoot) ->
     fake.inbox_channel = "Channel::Whatsapp"
     assert cli.main(["--yes"], settings=settings, seeder_factory=_factory(settings, fake)) == 3
     assert fake.mutations() == []
+
+
+def test_no_stdin_is_not_confirmed(
+    settings: Settings, fake: FakeChatwoot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _eof(_prompt: str = "") -> str:
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _eof)
+    assert cli.main(["--reset"], settings=settings, seeder_factory=_factory(settings, fake)) == 1
+    assert fake.mutations() == []

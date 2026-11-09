@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from chatbot.features.chat.customer360_router import _phones_match
-from chatbot.features.demo.conftest import INBOX, FakeChatwoot
+from chatbot.features.demo.conftest import INBOX, WHATSAPP_INBOX, FakeChatwoot
 from chatbot.features.demo.crm import DemoCrmClient
 from chatbot.features.demo.safety import DemoSafetyError
 from chatbot.features.demo.seeder import DemoSeeder, load_personas
@@ -51,6 +51,8 @@ def test_personas_file_matches_task1_keys() -> None:
             assert {"vehicle_plate", "vehicle_model"} <= set(conv["custom_attributes"])
             assert conv["message"].startswith("[DEMO]")
             assert "escalate" not in conv["labels"]
+            assert not [x for x in conv["labels"] if x.startswith("dealer_")]
+            assert conv["custom_attributes"]["caller_dealer"] == "petaling_jaya"
         assert all(n.startswith("+600000001") for n in [p["number"]])
 
 
@@ -88,8 +90,10 @@ async def test_seed_creates_every_persona_history(
 
     for conv in fake.conversations.values():
         assert conv["inbox_id"] == INBOX
-        assert {"audit_test", "demo_persona", "dealer_petaling_jaya"} <= set(conv["labels"])
-        assert "escalate" not in conv["labels"]
+        # R29: no dealer_* label (it drives live routing/escalation); the
+        # caller lookup reads caller_dealer instead.
+        assert sorted(conv["labels"]) == ["audit_test", "demo_persona"]
+        assert conv["custom_attributes"]["caller_dealer"] == "petaling_jaya"
         assert conv["source_id"].startswith("demo-")
         assert conv["custom_attributes"]["demo_seed"] == "demo_persona"
         assert conv["messages"] and all(m["content"].startswith("[DEMO]") for m in conv["messages"])
@@ -172,6 +176,18 @@ def _populate_real_world(fake: FakeChatwoot) -> dict[str, int]:
     ids["audit_only"] = fake.add_conversation(ids["real"], labels=["audit_test"], status="resolved")
     ids["old_label"] = fake.add_conversation(ids["near1"], labels=["demo_persona_old"])
     ids["new_call"] = fake.add_conversation(ids["new_caller"], labels=[])
+    ids["labelled_unmarked"] = fake.add_conversation(ids["real"], labels=["demo_persona"])
+    # deploy/scripts/seed_demo_data contact: [DEMO] name, its own batch marker.
+    ids["budi"] = fake.add_contact(
+        "[DEMO] Budi Santoso", "+62812000001", demo_seed="batch-1", vehicle_no="B1234XY"
+    )
+    ids["budi_conv"] = fake.add_conversation(
+        ids["budi"], labels=["audit_test"], demo_seed="batch-1"
+    )
+    ids["budi_conv2"] = fake.add_conversation(ids["budi"], labels=[], status="resolved")
+    # A real handset renamed by agent/app/services/demo_persona.py, on WhatsApp.
+    ids["renamed"] = fake.add_contact("[DEMO] x", "+60123000009")
+    ids["renamed_wa"] = fake.add_conversation(ids["renamed"], labels=[], inbox=WHATSAPP_INBOX)
     return ids
 
 
@@ -190,7 +206,12 @@ async def test_reset_never_touches_a_non_demo_record(
     ids = _populate_real_world(fake)
     seeder = _seeder(settings, crm, rsa)
     await seeder.seed()
-    demo_contact_ids = {c["id"] for c in fake.contacts.values() if c["name"].startswith("[DEMO] ")}
+    demo_contact_ids = {
+        c["id"]
+        for c in fake.contacts.values()
+        if c["custom_attributes"].get("demo_seed") == "demo_persona"
+    }
+    assert len(demo_contact_ids) == 4
     # A rehearsal call on a demo persona, made by the phone code (no label).
     farid = _by_name(fake, "[DEMO] Farid")
     call_on_demo = fake.add_conversation(farid["id"], labels=[])
@@ -210,7 +231,11 @@ async def test_reset_never_touches_a_non_demo_record(
     # demo contact), and the personas are back with fresh ids.
     assert call_on_demo not in fake.conversations
     assert not demo_contact_ids & set(fake.contacts)
-    assert sorted(c["name"] for c in fake.contacts.values() if c["name"].startswith("[DEMO] ")) == [
+    assert sorted(
+        c["name"]
+        for c in fake.contacts.values()
+        if c["custom_attributes"].get("demo_seed") == "demo_persona"
+    ) == [
         "[DEMO] Ahmad",
         "[DEMO] Farid",
         "[DEMO] Lim",
@@ -222,6 +247,33 @@ async def test_reset_never_touches_a_non_demo_record(
     assert report["removed"]["rsa_incidents"] == 1
     # The new caller's leftover contact is reported, not touched.
     assert [n["persona"] for n in report["not_demo_records"]] == ["new"]
+    # No tenant-wide "[DEMO]" search: only persona numbers are searched.
+    searches = [c.path for c in fake.calls if c.path.startswith("/contacts/search")]
+    assert searches
+    assert all("DEMO" not in p.upper() for p in searches)
+
+
+async def test_reset_keeps_a_persona_contact_that_gained_a_real_conversation(
+    settings: Settings, crm: DemoCrmClient, fake: FakeChatwoot
+) -> None:
+    seeder = _seeder(settings, crm)
+    await seeder.seed()
+    ahmad = _by_name(fake, "[DEMO] Ahmad")
+    real_conv = fake.add_conversation(ahmad["id"], labels=[], inbox=WHATSAPP_INBOX)
+    snapshot = copy.deepcopy(fake.conversations[real_conv])
+    fake.calls.clear()
+    report = await seeder.reset()
+    assert ahmad["id"] in fake.contacts
+    assert fake.conversations[real_conv] == snapshot
+    assert real_conv not in fake.mutated_ids()
+    assert not [
+        c for c in fake.mutations() if c.method == "DELETE" and c.path == f"/contacts/{ahmad['id']}"
+    ]
+    assert any(str(ahmad["id"]) in e for e in report["errors"])
+    assert report["removed"]["contacts"] == 3
+    # Its own demo history was removed and seeded again on the kept contact.
+    demo_convs = [c for c in _convs_of(fake, ahmad["id"]) if "demo_persona" in c["labels"]]
+    assert len(demo_convs) == 1
 
 
 async def test_reset_resolves_then_deletes_each_demo_conversation(
@@ -320,3 +372,42 @@ async def test_rsa_reset_rechecks_each_row(settings: Settings, crm: DemoCrmClien
     assert removed == 0
     assert errors
     assert await original_get(rid) is not None
+
+
+async def test_rsa_without_phone_matches_on_plate_and_markers(
+    settings: Settings, crm: DemoCrmClient
+) -> None:
+    """A tenant whose rsa_incidents lacks customer_phone stores it as None:
+    the demo row is still found by its persona plate + both markers, a
+    staff row with the same plate is not."""
+    rsa = InMemoryRsaRepository()
+    seeder = _seeder(settings, crm, rsa)
+    ours = await rsa.create_incident(
+        incident_date="2026-10-12",
+        vehicle_no="DMO1105",
+        cause="x",
+        customer_phone=None,
+        created_by="demo_persona",
+        remarks="[DEMO] x",
+    )
+    staff = await rsa.create_incident(
+        incident_date="2026-10-12",
+        vehicle_no="DMO1105",
+        cause="x",
+        customer_phone=None,
+        created_by="staff",
+        remarks="[DEMO] x",
+    )
+    other_plate = await rsa.create_incident(
+        incident_date="2026-10-12",
+        vehicle_no="WXY1234",
+        cause="x",
+        customer_phone=None,
+        created_by="demo_persona",
+        remarks="[DEMO] x",
+    )
+    removed, _ = await seeder._remove_demo_rsa()
+    assert removed == 1
+    assert await rsa.get_incident(ours) is None
+    assert await rsa.get_incident(staff) is not None
+    assert await rsa.get_incident(other_plate) is not None

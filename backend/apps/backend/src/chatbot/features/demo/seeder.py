@@ -4,26 +4,31 @@ Rehearsals and the 17 Nov demo need the phone personas (personas.json next
 to this file -- same ids/numbers as the Phone tab's personas.ts) to exist in
 a known state: their ``[DEMO]`` Chatwoot contact with the fake number and
 the vehicle attributes the caller lookup reads (``vehicle_no`` /
-``vehicle_model`` on the contact, ``vehicle_plate`` / ``vehicle_model`` on
-each conversation, a ``dealer_<slug>`` label), their history, and Farid's
-past RSA incident for Customer 360.
+``vehicle_model`` on the contact; ``vehicle_plate`` / ``vehicle_model`` and
+the dealer as ``caller_dealer`` on each conversation -- never a
+``dealer_<slug>`` label, ruling R29), their history, and Farid's past RSA
+incident for Customer 360.
 
-**Seed** is idempotent: an existing ``[DEMO]`` contact is reused (its
-attributes merged), and its history is only created when it has no
-``demo_persona`` conversation yet. A persona whose number already belongs
-to a non-demo contact is SKIPPED and reported -- Chatwoot keeps phone
-numbers unique, and that contact is not ours to change.
+**Seed** is idempotent: a contact this seeder owns is reused (attributes
+merged), and its history is only created when it has no marker-stamped
+conversation yet. A persona whose number is held by a contact we do not
+own is SKIPPED and reported -- Chatwoot keeps phone numbers unique, and
+that contact is not ours to change.
 
-**Reset** removes every demo record (see ``safety`` for what counts) --
-each conversation is resolved, then deleted; then the contacts; then the
-demo RSA incidents -- and seeds again. It runs on Proton's live tenant, so:
+**Reset** removes only what this seeder owns (``safety`` has the rules;
+other "[DEMO]" data on the tenant -- seed_demo_data contacts, renamed
+handsets -- is never ours). Contacts are found by the persona numbers only,
+never by a tenant-wide "[DEMO]" search. Each owned conversation is
+resolved, then deleted; then each owned contact whose conversations are
+ALL ours (otherwise it is kept and reported); then the demo RSA incidents;
+then it seeds again. It runs on Proton's live tenant, so:
 
 * it refuses unless the target inbox is an API inbox (``Channel::Api``),
   checked BEFORE anything is written or deleted: never the WhatsApp inbox,
   whose outgoing messages reach real people;
 * every write goes through ``DemoCrmClient``, which re-reads the target and
-  refuses a non-demo record (``DemoSafetyError``); a refused or failed
-  delete is reported and the run carries on;
+  refuses a record it does not own (``DemoSafetyError``); a refused or
+  failed delete is reported and the run carries on;
 * contacts that are NOT demo records but hold a persona number (typically
   the "New caller" contact a rehearsal call created) are reported, never
   touched.
@@ -32,38 +37,43 @@ demo RSA incidents -- and seeds again. It runs on Proton's live tenant, so:
 new conversation when the inbox has an agent bot, and the agent bot answers
 an incoming customer message on a pending conversation. So a conversation
 is moved to ``open`` before its ``[DEMO]`` incoming message is posted, and
-only then to its final status. No ``escalate`` label is ever applied (it
-would send the escalation email to the dealer on a live tenant).
+only then to its final status. No ``escalate`` or ``dealer_*`` label is
+ever applied (they drive the escalation email / dealer routing on a live
+tenant).
+
+**Live-tenant side effects of seeding** (same as any conversation on that
+inbox): auto-assignment may assign the open conversation to an agent; the
+agent lifecycle may post its disclaimer, and on resolve the CSAT / rating
+survey (outgoing on the API inbox, never relayed: the source id is
+``demo-...``); department suggestion and duplicate detection may write
+their own labels/attributes; SLA scans may alert on Nurul's open case.
+Seeded cases count in native Chatwoot reports until Reset; only the
+BigQuery sync drops them, and only with METRICS_EXCLUDE_DEMO_SEED=true.
 """
 
 from __future__ import annotations
 
-import json
 import uuid
 from contextlib import asynccontextmanager
-from functools import cache
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 import structlog
 
-from chatbot.features.chat.customer360_router import _phones_match
+from chatbot.features.chat.customer360_router import _phones_match, _plate_key
 from chatbot.features.demo.crm import ChatwootError, DemoCrmClient
+from chatbot.features.demo.personas import load_personas, seeded_numbers, seeded_plates
 from chatbot.features.demo.safety import (
     AUDIT_LABEL,
     CREATABLE_LABELS,
     DEMO_LABEL,
-    DEMO_NAME_PREFIX,
     DEMO_SEED_MARKER,
     DEMO_SOURCE_PREFIX,
     RSA_CREATED_BY,
     DemoSafetyError,
     assert_demo_rsa,
     assert_demo_text,
-    conversation_labels,
-    is_demo_contact,
-    is_demo_conversation,
+    has_seeder_markers,
     is_demo_rsa,
 )
 
@@ -73,18 +83,9 @@ if TYPE_CHECKING:
 
 _log = structlog.get_logger(__name__)
 
-_PERSONAS_PATH = Path(__file__).with_name("personas.json")
 _API_CHANNEL = "Channel::Api"
 
-
-@cache
-def _load(path: Path) -> tuple[dict[str, Any], ...]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return tuple(data["personas"])
-
-
-def load_personas(path: Path | None = None) -> list[dict[str, Any]]:
-    return [dict(p) for p in _load(path or _PERSONAS_PATH)]
+__all__ = ["DemoSeeder", "build_seeder_factory", "load_personas"]
 
 
 def _conv_sort_key(conv: dict[str, Any]) -> tuple[int, int]:
@@ -112,6 +113,13 @@ class DemoSeeder:
         self._inbox_id = int(settings.demo_inbox_id or settings.chatwoot_inbox_id or 0)
         self._account_id = settings.chatwoot_account_id
         self._crm_base = settings.demo_crm_base_url.rstrip("/")
+        self._numbers = seeded_numbers(self._personas)
+        self._plates = {_plate_key(p) for p in seeded_plates(self._personas)}
+        self._plates_by_number = {
+            p["number"]: {_plate_key(x) for x in seeded_plates([p])}
+            for p in self._personas
+            if p.get("number")
+        }
 
     # --- small helpers --------------------------------------------------------------
 
@@ -179,13 +187,13 @@ class DemoSeeder:
         contact_spec = spec["contact"]
         number = persona["number"]
         matches = await self._contacts_for_number(number)
-        real = [c for c in matches if not is_demo_contact(c)]
+        real = [c for c in matches if not self._crm.owns_contact(c)]
         if real:
             report["conflicts"].append(
                 {
                     "persona": pid,
                     "contact_id": real[0]["id"],
-                    "reason": "number belongs to a non-demo contact; persona not seeded",
+                    "reason": "number held by a contact this seeder does not own; not seeded",
                 }
             )
             return
@@ -202,7 +210,7 @@ class DemoSeeder:
         contact_id = int(contact["id"])
 
         existing = await self._crm.contact_conversations(contact_id)
-        if any(DEMO_LABEL in conversation_labels(c) for c in existing):
+        if any(has_seeder_markers(c) for c in existing):
             report["skipped_history"].append(pid)
         else:
             for index, conv_spec in enumerate(spec.get("conversations") or [], start=1):
@@ -242,12 +250,7 @@ class DemoSeeder:
             )
             return
         number = persona["number"]
-        existing = [
-            r
-            for r in await self._rsa.list_incidents()
-            if is_demo_rsa(r) and _phones_match(number, getattr(r, "customer_phone", None))
-        ]
-        if existing:
+        if any(self._rsa_is_personas(r, number) for r in await self._rsa.list_incidents()):
             return
         for spec in incidents:
             assert_demo_text(spec.get("remarks"))
@@ -258,26 +261,39 @@ class DemoSeeder:
 
     # --- reset ---------------------------------------------------------------------
 
+    def _rsa_is_personas(self, row: Any, number: str | None = None) -> bool:
+        """Demo markers AND the persona's phone -- or, when the row has no
+        phone (a tenant whose table lacks the column), a seeded plate."""
+        if not is_demo_rsa(row):
+            return False
+        phone = getattr(row, "customer_phone", None)
+        numbers = [number] if number else list(self._numbers)
+        if phone:
+            return any(_phones_match(n, phone) for n in numbers)
+        plates = self._plates_by_number.get(number, set()) if number else self._plates
+        return _plate_key(str(getattr(row, "vehicle_no", "") or "")) in plates
+
     async def _find_demo_records(
         self,
     ) -> tuple[dict[int, dict[str, Any]], dict[int, dict[str, Any]]]:
+        # Persona numbers ONLY -- never a tenant-wide "[DEMO]" search, which
+        # would also return seed_demo_data contacts and renamed handsets.
         contacts: dict[int, dict[str, Any]] = {}
-        candidates = list(await self._crm.search_contacts(DEMO_NAME_PREFIX.strip()))
-        for persona in self._personas:
-            candidates.extend(await self._contacts_for_number(persona.get("number") or ""))
-        for c in candidates:
-            if c.get("id") is not None and is_demo_contact(c):
-                contacts[int(c["id"])] = c
+        for number in self._numbers:
+            for c in await self._contacts_for_number(number):
+                if self._crm.owns_contact(c):
+                    contacts[int(c["id"])] = c
 
         conversations: dict[int, dict[str, Any]] = {}
         for conv in await self._crm.conversations_with_label(DEMO_LABEL):
-            if conv.get("id") is not None and is_demo_conversation(conv):
+            if conv.get("id") is not None and has_seeder_markers(conv):
                 conversations[int(conv["id"])] = conv
         for contact_id in contacts:
-            # Includes the calls a rehearsal made on this demo persona
-            # (no label); the client's fresh re-read still decides.
+            # Includes the calls a rehearsal made on a persona on the demo
+            # inbox; anything on another inbox is not ours. The client's
+            # fresh re-read still decides.
             for conv in await self._crm.contact_conversations(contact_id):
-                if conv.get("id") is not None:
+                if conv.get("id") is not None and self._crm.owns_conversation(conv):
                     conversations[int(conv["id"])] = conv
         return contacts, conversations
 
@@ -285,11 +301,8 @@ class DemoSeeder:
         if self._rsa is None:
             return 0, []
         removed, errors = 0, []
-        numbers = [p["number"] for p in self._personas if p.get("number")]
         for row in await self._rsa.list_incidents():
-            if not is_demo_rsa(row):
-                continue
-            if not any(_phones_match(n, getattr(row, "customer_phone", None)) for n in numbers):
+            if not self._rsa_is_personas(row):
                 continue
             try:
                 fresh = await self._rsa.get_incident(row.id)
@@ -304,7 +317,7 @@ class DemoSeeder:
         out = []
         for persona in self._personas:
             for c in await self._contacts_for_number(persona.get("number") or ""):
-                if not is_demo_contact(c):
+                if not self._crm.owns_contact(c):
                     out.append({"persona": persona["id"], "contact_id": c["id"]})
         return out
 
@@ -357,8 +370,8 @@ class DemoSeeder:
     ) -> dict[str, Any]:
         number = persona.get("number") or ""
         matches = await self._contacts_for_number(number)
-        demo = [c for c in matches if is_demo_contact(c)]
-        others = [c for c in matches if not is_demo_contact(c)]
+        demo = [c for c in matches if self._crm.owns_contact(c)]
+        others = [c for c in matches if not self._crm.owns_contact(c)]
         contact = demo[0] if demo else None
         convs = await self._crm.contact_conversations(int(contact["id"])) if contact else []
         latest = max(convs, key=_conv_sort_key) if convs else None
@@ -366,22 +379,18 @@ class DemoSeeder:
         if others:
             if persona.get("crm_seed"):
                 warning = (
-                    f"This number belongs to non-demo contact #{others[0]['id']}: the persona "
-                    "is not seeded, and Seed/Reset never touch that contact."
+                    f"This number is held by contact #{others[0]['id']}, which this seeder "
+                    "does not own: the persona is not seeded, and Seed/Reset never touch it."
                 )
             else:
                 warning = (
-                    f"Non-demo contact #{others[0]['id']} holds this number (likely made by an "
+                    f"Contact #{others[0]['id']} holds this number (likely made by an "
                     "earlier rehearsal call). Reset does not touch it: delete it in the CRM to "
                     "rehearse a brand-new caller again."
                 )
         rsa_count = None
         if rsa_rows is not None and number:
-            rsa_count = sum(
-                1
-                for r in rsa_rows
-                if is_demo_rsa(r) and _phones_match(number, getattr(r, "customer_phone", None))
-            )
+            rsa_count = sum(1 for r in rsa_rows if self._rsa_is_personas(r, number))
         return {
             "id": persona["id"],
             "label": persona.get("label", ""),

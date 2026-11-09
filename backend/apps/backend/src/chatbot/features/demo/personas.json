@@ -1,5 +1,5 @@
 {
-  "_about": "Server-side demo personas for the test console Demo tab and the [DEMO] CRM seeder (features/demo). Mirrors .superpowers/sdd/2026-11-09-phone-caller-context/personas.json and the Phone tab's personas.ts (same ids, numbers, attribute keys). All numbers are fake (+600000001xx is not a Malaysian mobile range). Differences from the sdd copy: every conversation carries the [DEMO] history message the seeder posts, Farid has an RSA incident, each persona lists what its card shows, and Nurul's conversation has NO `escalate` label (on a live tenant with ESCALATION_ALL_CHANNELS_ENABLED it would send the EM-7 escalation email to the dealer and start the reminder ladder; the open case + case_type Complaint is what the phone demo reads).",
+  "_about": "Server-side demo personas for the test console Demo tab and the [DEMO] CRM seeder (features/demo). Mirrors .superpowers/sdd/2026-11-09-phone-caller-context/personas.json and the Phone tab's personas.ts (same ids, numbers, attribute keys). All numbers are fake (+600000001xx is not a Malaysian mobile range). Differences from the sdd copy: no conversation gets a dealer_<slug> label (ruling R29: the label drives live dealer routing/escalation) -- the dealer is seeded as conversation custom attribute caller_dealer, which the caller lookup reads; every conversation carries the [DEMO] history message the seeder posts, Farid has an RSA incident, each persona lists what its card shows, and Nurul's conversation has NO `escalate` label (on a live tenant with ESCALATION_ALL_CHANNELS_ENABLED it would send the EM-7 escalation email to the dealer and start the reminder ladder; the open case + case_type Complaint is what the phone demo reads).",
   "personas": [
     {
       "id": "ahmad",
@@ -17,8 +17,8 @@
         "conversations": [
           {
             "status": "resolved",
-            "labels": ["dealer_petaling_jaya"],
-            "custom_attributes": {"vehicle_plate": "DMO1101", "vehicle_model": "Proton X50", "case_type": "Service Booking"},
+            "labels": [],
+            "custom_attributes": {"caller_dealer": "petaling_jaya", "vehicle_plate": "DMO1101", "vehicle_model": "Proton X50", "case_type": "Service Booking"},
             "message": "[DEMO] Hi, I would like to book the 20,000 km service for my Proton X50 at Petaling Jaya next week."
           }
         ],
@@ -41,8 +41,8 @@
         "conversations": [
           {
             "status": "open",
-            "labels": ["dealer_petaling_jaya"],
-            "custom_attributes": {"vehicle_plate": "DMO1102", "vehicle_model": "Proton Saga", "case_type": "Complaint"},
+            "labels": [],
+            "custom_attributes": {"caller_dealer": "petaling_jaya", "vehicle_plate": "DMO1102", "vehicle_model": "Proton Saga", "case_type": "Complaint"},
             "message": "[DEMO] Saya ingin membuat aduan: penghawa dingin Proton Saga saya tidak sejuk selepas servis minggu lepas."
           }
         ],
@@ -65,14 +65,14 @@
         "conversations": [
           {
             "status": "resolved",
-            "labels": ["dealer_petaling_jaya"],
-            "custom_attributes": {"vehicle_plate": "DMO1103", "vehicle_model": "Proton X70"},
+            "labels": [],
+            "custom_attributes": {"caller_dealer": "petaling_jaya", "vehicle_plate": "DMO1103", "vehicle_model": "Proton X70"},
             "message": "[DEMO] 你好，我想问一下我的 Proton X70 的保养时间。"
           },
           {
             "status": "resolved",
-            "labels": ["dealer_petaling_jaya"],
-            "custom_attributes": {"vehicle_plate": "DMO1104", "vehicle_model": "Proton Persona"},
+            "labels": [],
+            "custom_attributes": {"caller_dealer": "petaling_jaya", "vehicle_plate": "DMO1104", "vehicle_model": "Proton Persona"},
             "message": "[DEMO] 你好，我的 Proton Persona 需要更换轮胎。"
           }
         ],
@@ -95,8 +95,8 @@
         "conversations": [
           {
             "status": "resolved",
-            "labels": ["dealer_petaling_jaya"],
-            "custom_attributes": {"vehicle_plate": "DMO1105", "vehicle_model": "Proton X70"},
+            "labels": [],
+            "custom_attributes": {"caller_dealer": "petaling_jaya", "vehicle_plate": "DMO1105", "vehicle_model": "Proton X70"},
             "message": "[DEMO] Thank you for the tow last month, the X70 is running fine now."
           }
         ],

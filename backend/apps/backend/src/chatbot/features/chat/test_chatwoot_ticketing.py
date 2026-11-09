@@ -608,8 +608,62 @@ async def test_contact_create_conflict_on_phone_reuses_the_contact_with_that_num
             return {}
 
     fake = _Fake({})
-    cid = await _adapter(fake)._find_or_create_contact("phone-CA1", None, "+60000000101")
-    assert cid == 11
+    on = _caller_ctx_adapter(fake)
+    assert await on._find_or_create_contact("phone-CA1", None, "+60000000101") == 11
+    # Flag off: the fallback does not exist (pre-caller-context behaviour).
+    assert await _adapter(fake)._find_or_create_contact("phone-CA1", None, "+60000000101") is None
+
+
+def _caller_ctx_adapter(fake: _FakeClient) -> ChatwootAdapter:
+    a = ChatwootAdapter(
+        Settings(
+            chatwoot_account_id=1,
+            chatwoot_inbox_id=7,
+            chatwoot_agent_team_id=3,
+            phone_caller_context_enabled=True,
+        )
+    )
+    a._request = fake._request  # type: ignore[method-assign]
+    return a
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_session_never_reuses_an_open_phone_call_case() -> None:
+    """Once a call can land on an existing customer's contact, that contact's
+    open phone case must not swallow their next WhatsApp message."""
+    fake = _FakeClient(
+        {
+            ("POST", "/contacts"): {},
+            ("GET", "/contacts/search"): {"payload": [{"id": 55, "identifier": "whatsapp-+60123"}]},
+            ("GET", "/contacts/55/conversations"): {
+                "payload": [
+                    {
+                        "id": 90,
+                        "status": "open",
+                        "inbox_id": 7,
+                        "additional_attributes": {"session_id": "phone-CA9"},
+                    }
+                ]
+            },
+            ("POST", "/conversations"): {"id": 91},
+        }
+    )
+    assert await _adapter(fake)._find_or_create_conversation("whatsapp-+60123") == "91"
+
+
+@pytest.mark.asyncio
+async def test_find_conversation_ticket_matches_the_stamped_session_id() -> None:
+    """Chatwoot's conversation JSON has no source_id; the stamp is what lets a
+    recording callback after a restart find the call's conversation."""
+    fake = _FakeClient(
+        {
+            ("GET", "/contacts/search"): {"payload": [{"id": 55, "identifier": "phone-CA1"}]},
+            ("GET", "/contacts/55/conversations"): {
+                "payload": [{"id": 92, "additional_attributes": {"session_id": "phone-CA1"}}]
+            },
+        }
+    )
+    assert await _adapter(fake).find_conversation_ticket("phone-CA1") == "92"
 
 
 @pytest.mark.asyncio

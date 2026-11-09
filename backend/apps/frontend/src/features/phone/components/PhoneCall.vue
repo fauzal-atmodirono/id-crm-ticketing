@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { Device, type Call } from '@twilio/voice-sdk'
 import { fetchPhoneToken } from '../api/phone.api'
 import PhoneVisualizer from './PhoneVisualizer.vue'
-import { CUSTOM_PERSONA_ID, DEFAULT_PERSONA_ID, PERSONAS, type Persona } from '../personas'
+import { DEFAULT_PERSONA_ID, PERSONAS, type Persona } from '../personas'
 
 type Status = 'idle' | 'connecting' | 'in-call' | 'error'
 
@@ -11,15 +11,13 @@ const status = ref<Status>('idle')
 const elapsed = ref(0)
 
 // "Call as" persona (demo). The backend ignores it unless
-// PHONE_WEB_CALL_AS_ENABLED is on, and never applies it to PSTN calls.
+// PHONE_WEB_CALL_AS_ENABLED is on and the number is on
+// PHONE_WEB_CALL_AS_NUMBERS, and never applies it to PSTN calls.
 const personaId = ref(DEFAULT_PERSONA_ID)
-const customNumber = ref('')
 const persona = computed<Persona>(
   () => PERSONAS.find((p) => p.id === personaId.value) ?? (PERSONAS[0] as Persona),
 )
-const callAs = computed(() =>
-  personaId.value === CUSTOM_PERSONA_ID ? customNumber.value.trim() : persona.value.number,
-)
+const callAs = computed(() => persona.value.number)
 const analyser = ref<AnalyserNode | null>(null)
 
 let device: Device | null = null
@@ -113,14 +111,6 @@ onBeforeUnmount(endCall)
           <option v-for="p in PERSONAS" :key="p.id" :value="p.id">{{ p.label }}</option>
         </select>
       </label>
-      <input
-        v-if="personaId === CUSTOM_PERSONA_ID"
-        v-model="customNumber"
-        class="persona__input"
-        type="tel"
-        inputmode="tel"
-        placeholder="Mobile number, e.g. 012 345 6789"
-      />
       <p class="persona__hint">
         {{ persona.description }}<br />
         <strong>Say:</strong> {{ persona.scriptHint }}
@@ -281,8 +271,7 @@ onBeforeUnmount(endCall)
   font-size: 0.8rem;
   color: var(--text-muted);
 }
-.persona__select,
-.persona__input {
+.persona__select {
   padding: 0.45rem 0.5rem;
   font-size: 0.85rem;
   color: var(--text);

@@ -44,6 +44,10 @@ class _Service:
         self.ctx = ctx
         self.lookups: list[tuple[str, str]] = []
         self.saves: list[dict[str, Any]] = []
+        self.allow = True
+
+    def allow_spoken_lookup(self, phone: str) -> bool:
+        return self.allow
 
     async def lookup(self, phone: str, source: str) -> CallerContext:
         self.lookups.append((phone, source))
@@ -131,6 +135,7 @@ async def test_save_caller_details_replies_at_once_and_writes_in_background() ->
         name="Hafiz", plate="DMO1106", model="Proton Saga", dealer_text="Proton Petaling Jaya"
     )
     assert last["dealer_slug"] == "petaling_jaya"
+    assert last["contact_writes"] is True  # caller ID is the network's word
 
 
 async def test_unmatched_dealer_is_text_only_and_never_labelled() -> None:
@@ -218,11 +223,17 @@ def test_ring_parameters_without_caller_service_are_unchanged() -> None:
 # --- item 9: no caller ID ---------------------------------------------------
 
 
-async def test_no_caller_id_defers_the_conversation_until_the_number_is_told() -> None:
+def _lookup(i: int, number: str, name: str | None = "Ahmad") -> ToolCall:
+    args: dict[str, Any] = {"mobile_number": number}
+    if name is not None:
+        args["caller_name"] = name
+    return ToolCall(id=f"l{i}", name="lookup_caller", args=args)
+
+
+async def test_spoken_number_attaches_only_after_a_server_side_name_match() -> None:
     known = CallerContext.from_candidates(PHONE, "spoken", [AHMAD])
     svc = _Service(known)
-    call = ToolCall(id="t1", name="lookup_caller", args={"mobile_number": "000 000 0101"})
-    bridge, live, log = _bridge([call], service=svc, ctx=None)
+    bridge, live, log = _bridge([_lookup(1, "000 000 0101", "ahmad")], service=svc, ctx=None)
     await bridge.handle_twilio(_start())
     await asyncio.sleep(0)
     assert log.customers == []  # waiting for the number
@@ -231,12 +242,120 @@ async def test_no_caller_id_defers_the_conversation_until_the_number_is_told() -
     _, name, resp = live.tool_responses[0]
     assert name == "lookup_caller"
     assert resp["status"] == "match"
-    assert resp["customers"][0]["first_name"] == "Ahmad"
-    assert "say their name first" in resp["guidance"]
-    assert PHONE not in repr(resp) and "DMO1101" not in repr(resp)
+    assert resp["vehicles"] == [{"model": "Proton X50", "plate_ending": "1101"}]
+    # never the record's name, number or full plate for a spoken number
+    text = repr(resp)
+    assert "Ahmad" not in text and "first_name" not in text
+    assert PHONE not in text and "DMO1101" not in text
     await bridge.finalize()
     assert log.customers == [("Ahmad bin Ali", PHONE)]
-    assert svc.saves and svc.saves[0]["source"] == "spoken"
+    assert svc.saves[0]["source"] == "spoken" and svc.saves[0]["contact_writes"] is True
+
+
+async def test_spoken_number_with_the_wrong_name_stays_anonymous() -> None:
+    known = CallerContext.from_candidates(PHONE, "spoken", [AHMAD])
+    svc = _Service(known)
+    bridge, live, log = _bridge([_lookup(1, "0000000101", "Siti")], service=svc, ctx=None)
+    await bridge.handle_twilio(_start())
+    await bridge.pump()
+    resp = live.tool_responses[0][2]
+    assert resp["status"] == "no_match"
+    assert set(resp) == {"status", "guidance"}  # nothing about the record leaks
+    await bridge.finalize()
+    assert log.customers == [(None, None)]
+    # the told number is kept on the case as unverified, the contact untouched
+    assert svc.saves[-1]["phone"] == PHONE
+    assert svc.saves[-1]["contact_writes"] is False
+
+
+async def test_unknown_number_and_wrong_name_look_the_same() -> None:
+    svc = _Service()  # no record for the number
+    bridge, live, _ = _bridge([_lookup(1, "0000000101")], service=svc, ctx=None)
+    await bridge.handle_twilio(_start())
+    await bridge.pump()
+    assert set(live.tool_responses[0][2]) == {"status", "guidance"}
+    assert live.tool_responses[0][2]["status"] == "no_match"
+    await bridge.finalize()
+
+
+async def test_a_later_matching_name_confirms_the_told_number() -> None:
+    known = CallerContext.from_candidates(PHONE, "spoken", [AHMAD])
+    svc = _Service(known)
+    calls = [
+        _lookup(1, "0000000101", "Hmm"),
+        ToolCall(id="s1", name="save_caller_details", args={"name": "Ahmad"}),
+    ]
+    bridge, _, log = _bridge(calls, service=svc, ctx=None)
+    await bridge.handle_twilio(_start())
+    await bridge.pump()
+    await bridge.finalize()
+    assert log.customers == [("Ahmad bin Ali", PHONE)]
+
+
+async def test_a_later_lookup_drops_an_unattached_confirmation() -> None:
+    known = CallerContext.from_candidates(PHONE, "spoken", [AHMAD])
+    calls = [_lookup(1, "0000000101", "Ahmad"), _lookup(2, "0000000102", "Ahmad")]
+
+    class _Two(_Service):
+        async def lookup(self, phone: str, source: str) -> CallerContext:
+            self.lookups.append((phone, source))
+            return known if phone == PHONE else CallerContext(phone=phone, source=source)
+
+    svc = _Two()
+    bridge, live, log = _bridge(
+        calls, service=svc, ctx=None, settings=_settings(phone_caller_number_wait_seconds=5)
+    )
+    # no "start" yet: the conversation is created only at finalize
+    await bridge.pump()
+    assert [r[2]["status"] for r in live.tool_responses] == ["match", "no_match"]
+    await bridge.handle_twilio(_start())
+    await bridge.finalize()
+    assert log.customers == [(None, None)]
+
+
+async def test_save_with_a_different_name_undoes_an_unattached_confirmation() -> None:
+    known = CallerContext.from_candidates(PHONE, "spoken", [AHMAD])
+    calls = [
+        _lookup(1, "0000000101", "Ahmad"),
+        ToolCall(id="s1", name="save_caller_details", args={"name": "Siti"}),
+    ]
+    bridge, _, log = _bridge(
+        calls,
+        service=_Service(known),
+        ctx=None,
+        settings=_settings(phone_caller_number_wait_seconds=5),
+    )
+    await bridge.pump()
+    await bridge.handle_twilio(_start())
+    await bridge.finalize()
+    assert log.customers == [(None, None)]
+
+
+async def test_lookup_caller_needs_the_callers_name() -> None:
+    svc = _Service()
+    bridge, live, _ = _bridge([_lookup(1, "0000000101", None)], service=svc, ctx=None)
+    await bridge.pump()
+    assert live.tool_responses[0][2]["status"] == "need_name"
+    assert svc.lookups == []
+
+
+async def test_rate_limited_number_answers_no_match_without_a_lookup() -> None:
+    known = CallerContext.from_candidates(PHONE, "spoken", [AHMAD])
+    svc = _Service(known)
+    svc.allow = False
+    bridge, live, _ = _bridge([_lookup(1, "0000000101")], service=svc, ctx=None)
+    await bridge.pump()
+    assert live.tool_responses[0][2]["status"] == "no_match"
+    assert svc.lookups == []
+
+
+def test_ring_marks_a_spoken_number_unverified() -> None:
+    bridge, _, _ = _bridge([], service=_Service(), ctx=CallerContext(PHONE, "spoken"))
+    bridge.handoff = {"reason": "r", "summary": "s"}
+    assert bridge._handoff_parameters()["caller_unverified"] == "1"
+    verified, _, _ = _bridge([], service=_Service(), ctx=CallerContext(PHONE, "caller_id"))
+    verified.handoff = {"reason": "r", "summary": "s"}
+    assert "caller_unverified" not in verified._handoff_parameters()
 
 
 async def test_no_caller_id_creates_anonymously_after_the_wait() -> None:
@@ -251,7 +370,7 @@ async def test_no_caller_id_creates_anonymously_after_the_wait() -> None:
 
 async def test_lookup_caller_rejects_a_non_number_and_caps_attempts() -> None:
     calls = [
-        ToolCall(id=f"t{i}", name="lookup_caller", args={"mobile_number": n})
+        _lookup(i, n)
         for i, n in enumerate(["hello", "0000000101", "0000000102", "0000000103", "0000000104"])
     ]
     svc = _Service()

@@ -88,6 +88,11 @@ _DEALER_LABEL = re.compile(r"^dealer_(.+)$")
 # Dealer list is consulted on every call; it changes when an operator edits
 # the Escalation Routing page, so a short cache is plenty.
 _DEALER_CACHE_SECONDS = 300.0
+
+# Told-number lookups allowed per number per window, across all calls.
+_SPOKEN_LOOKUPS_PER_NUMBER = 5
+_SPOKEN_LOOKUP_WINDOW_SECONDS = 3600.0
+_SPOKEN_LOOKUP_MAP_CAP = 2048
 _DEALER_FETCH_TIMEOUT_SECONDS = 1.5
 
 _MAX_NAME = 80
@@ -218,7 +223,10 @@ def match_dealer(spoken: str | None, slugs: list[str]) -> str | None:
         want = _tokens(slug.replace("_", " "))
         if not want:
             continue
-        if set(want) <= said_set or "".join(want) == compact:
+        # A one-word slug ("sentul") must be the WHOLE meaningful thing said:
+        # one shared word is too weak ("Sentul Jaya Motors" is not "sentul").
+        multi_word = len(want) >= 2 and set(want) <= said_set  # noqa: PLR2004
+        if multi_word or "".join(want) == compact:
             hits.append(slug)
     return hits[0] if len(hits) == 1 else None
 
@@ -248,11 +256,53 @@ class CallerCandidate:
     contact_model: str = ""
 
 
+_DEMO_TAG = re.compile(r"^\s*\[demo\]\s*", re.IGNORECASE)
+_NAME_TOKEN = re.compile(r"[^\W\d_]+")
+_MIN_NAME_PREFIX = 3
+
+
 def _first_name(name: str | None) -> str:
-    text = " ".join((name or "").split())
+    """First word of a contact name; "" for placeholders. A leading [DEMO]
+    tag (seeded demo contacts) is not part of anyone's name."""
+    text = " ".join(_DEMO_TAG.sub("", name or "").split())
     if text.lower() in _PLACEHOLDER_NAMES or not re.search(r"[^\W\d_]", text):
         return ""
     return text.split(" ")[0][:_MAX_NAME]
+
+
+def _name_tokens(text: str | None) -> list[str]:
+    return [t.casefold() for t in _NAME_TOKEN.findall(_DEMO_TAG.sub("", text or ""))]
+
+
+def names_match(said: str | None, first_name: str | None) -> bool:
+    """Does the name the caller gave fit the record's first name?
+
+    Server-side, so a spoken number is only confirmed by what the CALLER
+    said, never by the model echoing the record. Case/punctuation-blind;
+    any word of what was said may equal the first name, or be a prefix of
+    it (or it of the word) of at least three letters ("Nur" for "Nurul").
+    """
+    first = _name_tokens(first_name)
+    if not first:
+        return False
+    want = first[0]
+    for tok in _name_tokens(said):
+        if tok == want:
+            return True
+        short, long_ = sorted((tok, want), key=len)
+        if len(short) >= _MIN_NAME_PREFIX and long_.startswith(short):
+            return True
+    return False
+
+
+def parse_number_list(raw: str | None) -> frozenset[str]:
+    """A comma list of numbers -> normalised E.164 set; junk entries dropped."""
+    out = set()
+    for part in (raw or "").split(","):
+        phone = normalise_mobile(part.strip())
+        if phone:
+            out.add(phone)
+    return frozenset(out)
 
 
 def _is_placeholder_name(name: str | None) -> bool:
@@ -360,7 +410,6 @@ def caller_view(ctx: CallerContext | None) -> dict[str, Any]:
                 "first_name": c.first_name,
                 "vehicles": [vv for vv in (_vehicle_view(v) for v in c.vehicles) if vv],
                 "usual_dealer": dealer_display(c.last_dealer),
-                "open_cases": c.open_cases,
             }
             for c in ctx.candidates
         ],
@@ -402,7 +451,6 @@ _SAVE = (
 
 
 def _known_instruction(ctx: CallerContext) -> str:
-    spoken = ctx.source == SOURCE_SPOKEN
     if len(ctx.candidates) > 1:
         names = ", ".join(c.first_name for c in ctx.candidates if c.first_name) or "unnamed"
         return (
@@ -423,16 +471,10 @@ def _known_instruction(ctx: CallerContext) -> str:
         parts.append("cars on file: " + "; ".join(_car_phrase(v) for v in cars))
     if c.last_dealer:
         parts.append(f"usual dealer {dealer_display(c.last_dealer)}")
-    if c.open_cases:
-        parts.append(f"{c.open_cases} open case(s)")
+    # No open-case count (ruling 9 Nov): the model has no business telling a
+    # caller what is on file before an agent has looked at it.
     facts = ", ".join(parts) or "no details on file"
-    if spoken:
-        confirm = (
-            "Because the number was told to you rather than detected, ask the caller to "
-            "say their name first and only treat them as this customer if it matches; "
-            "never say the name before they do. Then confirm the car. "
-        )
-    elif c.first_name and len(cars) == 1 and cars[0].model:
+    if c.first_name and len(cars) == 1 and cars[0].model:
         confirm = (
             "In your first reply, after the greeting, confirm identity and car in ONE "
             f"sentence, e.g. 'Am I speaking with {c.first_name}? Is this about your "
@@ -467,9 +509,11 @@ def build_caller_instruction(ctx: CallerContext | None, *, lookup_tool: bool) ->
         if lookup_tool:
             who = (
                 "We cannot see the caller's phone number. After greeting, ask for the "
-                "mobile number registered with Proton, then call lookup_caller with it "
-                "and follow the guidance it returns. If they decline or there is no "
-                "match, treat them as a new caller: " + _UNKNOWN
+                "mobile number registered with Proton and their name, then call "
+                "lookup_caller with mobile_number and caller_name (the name exactly as "
+                "the caller said it -- never guess or suggest one) and follow the "
+                "guidance it returns. If they decline or there is no match, treat them "
+                "as a new caller: " + _UNKNOWN
             )
         else:
             who = _UNKNOWN
@@ -480,11 +524,38 @@ def build_caller_instruction(ctx: CallerContext | None, *, lookup_tool: bool) ->
     return _FLOW + who + _SAVE
 
 
-def lookup_guidance(ctx: CallerContext) -> str:
-    """The `guidance` string returned by the lookup_caller tool."""
-    if not ctx.candidates:
-        return "No customer record for that number. Treat them as a new caller: " + _UNKNOWN
-    return _known_instruction(ctx)
+NO_MATCH_GUIDANCE = (
+    "We could not confirm that number and name together. Do not say whether the "
+    "number is in our records. Treat them as a new caller: " + _UNKNOWN
+)
+
+
+def spoken_match_vehicles(c: CallerCandidate) -> list[dict[str, str]]:
+    return [vv for vv in (_vehicle_view(v) for v in c.vehicles) if vv]
+
+
+def spoken_match_guidance(c: CallerCandidate) -> str:
+    """`guidance` for a confirmed spoken number. Deliberately no name: the
+    caller has just said theirs, and the record's version is never read back.
+    """
+    cars = [v for v in c.vehicles if v.model or v.plate]
+    if len(cars) == 1:
+        car = f"Confirm the car in one short question: is this about their {_car_phrase(cars[0])}? "
+    elif cars:
+        car = (
+            "They have more than one car on file ("
+            + "; ".join(_car_phrase(v) for v in cars)
+            + "): ask which car the call is about (models only, never plates). "
+        )
+    else:
+        car = "Ask for their car registration number and model if it matters. "
+    dealer = f"Their usual dealer is {dealer_display(c.last_dealer)}. " if c.last_dealer else ""
+    return (
+        "The number and name match a customer. Thank them using the name THEY gave. "
+        + car
+        + dealer
+        + "Never read out the phone number or a full plate. "
+    )
 
 
 # --- the service ----------------------------------------------------------------
@@ -597,10 +668,37 @@ class CallerContextService:
         self._dealer_source = dealer_source
         self._clock = clock
         self._dealer_cache: tuple[float, list[str]] | None = None
+        self._spoken_lookups: dict[str, list[float]] = {}
 
     @property
     def settings(self) -> Settings:
         return self._settings
+
+    def allow_spoken_lookup(self, phone: str) -> bool:
+        """Per-number limit on lookups by a TOLD number, across calls
+        (``_SPOKEN_LOOKUPS_PER_NUMBER`` per ``_SPOKEN_LOOKUP_WINDOW_SECONDS``):
+        someone ringing repeatedly to probe one number gets "no match" without
+        a lookup. In-process only -- one backend container per tenant; a
+        restart resets it, a second replica would double it."""
+        now = self._clock()
+        recent = [
+            t
+            for t in self._spoken_lookups.get(phone, [])
+            if now - t < _SPOKEN_LOOKUP_WINDOW_SECONDS
+        ]
+        if len(recent) >= _SPOKEN_LOOKUPS_PER_NUMBER:
+            self._spoken_lookups[phone] = recent
+            return False
+        recent.append(now)
+        self._spoken_lookups[phone] = recent
+        if len(self._spoken_lookups) > _SPOKEN_LOOKUP_MAP_CAP:
+            for key in [
+                k
+                for k, v in self._spoken_lookups.items()
+                if not v or now - v[-1] >= _SPOKEN_LOOKUP_WINDOW_SECONDS
+            ]:
+                del self._spoken_lookups[key]
+        return True
 
     async def dealer_slugs(self) -> list[str]:
         """Configured dealer slugs (DealerStore + DEALER_EMAIL_MAP_JSON),
@@ -674,8 +772,15 @@ class CallerContextService:
         source: str,
         details: CallerDetails,
         dealer_slug: str | None,
+        contact_writes: bool = False,
     ) -> None:
-        """Write what the caller said. Never raises; bounded by the caller."""
+        """Write what the caller said. Never raises; bounded by the caller.
+
+        ``contact_writes`` (default off) allows filling the number's contact's
+        EMPTY fields -- only for a number we can stand behind: network caller
+        ID, an allowlisted demo number, or a spoken number whose name matched.
+        Otherwise only the call's own conversation is written.
+        """
         try:
             await self._save(
                 ticket_id=ticket_id,
@@ -683,6 +788,7 @@ class CallerContextService:
                 source=source,
                 details=details,
                 dealer_slug=dealer_slug,
+                contact_writes=contact_writes,
             )
         except Exception as e:
             _log.warning(
@@ -697,6 +803,7 @@ class CallerContextService:
         source: str,
         details: CallerDetails,
         dealer_slug: str | None,
+        contact_writes: bool,
     ) -> None:
         attrs: dict[str, Any] = {}
         if details.name:
@@ -717,20 +824,34 @@ class CallerContextService:
                 attrs["caller_phone"] = phone
         if attrs:
             await self._chatwoot.set_conversation_attributes(ticket_id, attrs)
-        if not phone or not (details.name or details.plate or details.model):
+        if not contact_writes or not phone or not (details.name or details.plate or details.model):
             return
         found = await self._chatwoot.search_contacts(phone)
+        matched = [
+            c
+            for c in found
+            if isinstance(c, dict)
+            and c.get("id") is not None
+            and _phones_match(phone, c.get("phone_number"))
+        ]
+        if len(matched) > 1:
+            # One number, several contacts: which one is calling is not
+            # known, so none of them is edited.
+            _log.info("phone_caller_contact_write_skipped_shared_number", phone=mask(phone))
+            return
         contact = next(
-            (
-                c
-                for c in found
-                if isinstance(c, dict)
-                and c.get("id") is not None
-                and _phones_match(phone, c.get("phone_number"))
-            ),
+            iter(matched),
             None,
         )
         if contact is None:
+            return
+        if source == SOURCE_WEB_CALL_AS and not str(contact.get("name") or "").startswith(
+            "[DEMO] "
+        ):
+            # Ruling R34: a test-console persona call may only fill a seeded
+            # [DEMO] contact, never a real customer who happens to own the
+            # number.
+            _log.info("phone_caller_contact_write_skipped_not_demo", phone=mask(phone))
             return
         current = _attrs(contact)
         payload: dict[str, Any] = {}

@@ -16,7 +16,8 @@ export interface Persona {
   scriptHint: string
 }
 
-export const CUSTOM_PERSONA_ID = 'custom'
+// No free-text number (ruling R34): the backend only honours numbers on
+// PHONE_WEB_CALL_AS_NUMBERS anyway, and a typed number invites probing.
 export const DEFAULT_PERSONA_ID = 'unknown'
 
 export const PERSONAS: Persona[] = [
@@ -67,14 +68,7 @@ export const PERSONAS: Persona[] = [
     number: '',
     language: '',
     description: 'No caller ID reaches the assistant.',
-    scriptHint: 'The assistant must ask for your mobile number; say one of the persona numbers or any other.',
-  },
-  {
-    id: CUSTOM_PERSONA_ID,
-    label: 'Custom number',
-    number: '',
-    language: '',
-    description: 'Call as any mobile number you type below.',
-    scriptHint: 'Use a number that exists (or not) in the CRM.',
+    scriptHint:
+      'The assistant asks for your mobile number and name: say e.g. "zero zero zero zero zero zero zero one zero one" and "Ahmad". A wrong name is treated as a new caller.',
   },
 ]

@@ -25,16 +25,19 @@ from chatbot.features.chat.phone.agent_client_resolver import AgentClientResolve
 from chatbot.features.chat.phone.audio_codec import mulaw8k_to_pcm16k, pcm24k_to_mulaw8k
 from chatbot.features.chat.phone.call_control import CallControl
 from chatbot.features.chat.phone.caller_context import (
+    NO_MATCH_GUIDANCE,
+    SOURCE_CALLER_ID,
     SOURCE_SPOKEN,
     CallerContext,
     CallerDetails,
-    caller_view,
     dealer_display,
-    lookup_guidance,
     mask,
     match_dealer,
+    names_match,
     normalise_mobile,
     parse_caller_details,
+    spoken_match_guidance,
+    spoken_match_vehicles,
 )
 from chatbot.features.chat.phone.handoff_csat_tools import parse_csat_score, parse_nps_score
 from chatbot.features.chat.phone.handoff_target import HandoffTargetResolver, dial_twiml
@@ -197,11 +200,23 @@ class PhoneBridge:
         self.caller_details = CallerDetails()
         self._caller_dealer_slug: str | None = None
         self._caller_lookups = 0
-        # Set once the caller's number is known (or no longer worth waiting
-        # for); a call with no caller ID defers its conversation create until
+        # Fix round 1: a number is only CONFIRMED -- allowed to put the call on
+        # that number's contact and to fill that contact's fields -- when the
+        # network says so (caller ID), it is an allowlisted demo number
+        # (web_call_as), or the caller told it AND the name they gave matched
+        # the record server-side (lookup_caller / save_caller_details). A told
+        # number that is not confirmed is kept on the call's own conversation
+        # as unverified and nothing else.
+        self._caller_confirmed = (
+            caller_context is not None and caller_context.source != SOURCE_SPOKEN
+        )
+        # The last told-number lookup, waiting for a matching name.
+        self._spoken_pending: CallerContext | None = None
+        # Set once the caller is confirmed (or no longer worth waiting for); a
+        # call with no confirmed number defers its conversation create until
         # then, so the conversation lands on the right contact.
         self._caller_known = asyncio.Event()
-        if self._caller_phone or caller_service is None:
+        if (self._caller_phone and self._caller_confirmed) or caller_service is None:
             self._caller_known.set()
         self._caller_write_task: asyncio.Task[None] | None = None
         self._caller_write_pending = False
@@ -376,6 +391,10 @@ class PhoneBridge:
             params["caller_name"] = who[:80]
             params["vehicle"] = vehicle[:80]
             params["dealer"] = dealer[:80]
+            if self._caller_phone and self._caller_source != SOURCE_CALLER_ID:
+                # Told by the caller / chosen in the demo console, not proven
+                # by the network: the card says so (fork 0091).
+                params["caller_unverified"] = "1"
         return {k: v for k, v in params.items() if v}
 
     # --- caller context (2026-11-09) ---------------------------------------
@@ -495,10 +514,36 @@ class PhoneBridge:
 
     def _ticket_customer(self) -> tuple[str | None, str | None]:
         """(customer_name, customer_phone) for ensure_conversation_ticket."""
-        if self._caller_service is None or not self._caller_phone:
+        if self._caller_service is None or not self._caller_phone or not self._caller_confirmed:
+            # An unconfirmed told number never picks the contact (fix round 1).
             return None, None
         single = self._single_candidate()
         return (single.name or None) if single is not None else None, self._caller_phone
+
+    def _confirm_spoken(self, said_name: str) -> bool:
+        """Confirm the pending told number if exactly one of its contacts has
+        a first name matching what the caller said (server-side, never the
+        model's judgement)."""
+        ctx = self._spoken_pending
+        if ctx is None or not said_name:
+            return False
+        hits = [c for c in ctx.candidates if names_match(said_name, c.first_name)]
+        if len(hits) != 1:
+            return False
+        self._caller_ctx = CallerContext(phone=ctx.phone, source=SOURCE_SPOKEN, candidates=hits)
+        self._caller_phone = ctx.phone
+        self._caller_confirmed = True
+        self._caller_known.set()
+        return True
+
+    def _unconfirm_spoken(self) -> None:
+        """Drop a told-number confirmation that has not been used yet (the
+        conversation is not created). Once it is, the contact is fixed."""
+        if self._caller_source != SOURCE_SPOKEN or self.ticket_id is not None:
+            return
+        self._caller_ctx = None
+        self._caller_confirmed = False
+        self._caller_known.clear()
 
     async def _deferred_ticket_create(self, call_sid: str) -> None:
         """No caller ID: give the caller a chance to say their number
@@ -521,37 +566,63 @@ class PhoneBridge:
                 "status": "limit_reached",
                 "guidance": "Do not look up another number; continue as a new caller.",
             }
-        self._caller_lookups += 1
         phone = normalise_mobile(str(args.get("mobile_number") or ""))
+        said_name = " ".join(str(args.get("caller_name") or "").split())
         if phone is None:
+            self._caller_lookups += 1
             return {
                 "status": "invalid_number",
                 "guidance": "That is not a complete mobile number. Ask the caller to repeat it "
                 "digit by digit, or continue without it.",
             }
-        ctx = await self._caller_service.lookup(phone, SOURCE_SPOKEN)
-        self._caller_ctx = ctx
+        if not said_name:
+            return {
+                "status": "need_name",
+                "guidance": "Ask the caller for their name first, then call lookup_caller "
+                "again with mobile_number and caller_name.",
+            }
+        self._caller_lookups += 1
+        # A new number replaces whatever was told before; an unused
+        # confirmation of an earlier number is dropped.
+        self._unconfirm_spoken()
+        self._spoken_pending = None
         self._caller_phone = phone
         self._caller_source = SOURCE_SPOKEN
-        self._caller_known.set()
+        matched = False
+        if self._caller_service.allow_spoken_lookup(phone):
+            ctx = await self._caller_service.lookup(phone, SOURCE_SPOKEN)
+            self._spoken_pending = ctx
+            matched = self._confirm_spoken(said_name)
+        else:
+            _log.warning("phone_caller_lookup_rate_limited", phone=mask(phone))
         _log.info(
-            "phone_caller_lookup_tool",
-            call_sid=self.call_sid,
-            phone=mask(phone),
-            candidates=len(ctx.candidates),
-        )
-        view = caller_view(ctx)
-        status = {"single": "match", "multiple_people": "multiple_people"}.get(
-            view["match"], "no_match"
+            "phone_caller_lookup_tool", call_sid=self.call_sid, phone=mask(phone), matched=matched
         )
         # Record the told number on the case even if nothing else is said.
         self._schedule_caller_write()
-        return {"status": status, **view, "guidance": lookup_guidance(ctx)}
+        if not matched or self._caller_ctx is None or self._caller_ctx.single is None:
+            # The same answer for "no such number" and "wrong name": the
+            # tool is not an oracle for who owns a number.
+            return {"status": "no_match", "guidance": NO_MATCH_GUIDANCE}
+        c = self._caller_ctx.single
+        result: dict[str, Any] = {"status": "match", "vehicles": spoken_match_vehicles(c)}
+        if c.last_dealer:
+            result["usual_dealer"] = dealer_display(c.last_dealer)
+        result["guidance"] = spoken_match_guidance(c)
+        return result
 
     def _handle_save_caller_details(self, args: dict[str, object]) -> dict[str, Any]:
         if self._caller_service is None:
             return {"error": "unknown tool: save_caller_details"}
         details = parse_caller_details(dict(args))
+        if details.name and self._caller_source == SOURCE_SPOKEN and self._spoken_pending:
+            # A told number: the name the caller gives confirms it, or (if it
+            # contradicts a not-yet-used confirmation) undoes it.
+            single = self._single_candidate() if self._caller_confirmed else None
+            if single is None:
+                self._confirm_spoken(details.name)
+            elif not names_match(details.name, single.first_name):
+                self._unconfirm_spoken()
         self.caller_details = self.caller_details.merged(details)
         if details.dealer_text:
             self._caller_dealer_slug = match_dealer(details.dealer_text, self._dealer_slugs)
@@ -577,8 +648,9 @@ class PhoneBridge:
                 timeout=self._settings.phone_caller_save_timeout_seconds,
             )
         except Exception as e:
-            # Left pending: finalize() applies it once the ticket exists.
-            _log.warning(
+            # Left pending: finalize() applies it once the ticket exists. Info,
+            # not warning: waiting for a not-yet-created conversation is normal.
+            _log.info(
                 "phone_caller_write_deferred", call_sid=self.call_sid, error_type=type(e).__name__
             )
 
@@ -598,6 +670,7 @@ class PhoneBridge:
             source=self._caller_source,
             details=self.caller_details,
             dealer_slug=self._caller_dealer_slug,
+            contact_writes=self._caller_confirmed,
         )
         # No dealer_<slug> label here, not even on a handoff (controller
         # ruling 9 Nov 2026): reports count that label as "escalated to

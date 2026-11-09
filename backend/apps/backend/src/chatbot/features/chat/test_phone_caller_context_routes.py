@@ -139,11 +139,23 @@ def test_incoming_flag_off_is_byte_identical() -> None:
 
 def test_incoming_browser_call_as_only_when_enabled() -> None:
     form = {"CallSid": "CA1", "From": "client:proton-web-caller", "callAs": "0000000101"}
-    off = _incoming(_client(_settings(), _Service()), form)
+    allow = {"phone_web_call_as_numbers": "+60000000101,+60000000102"}
+    off = _incoming(_client(_settings(**allow), _Service()), form)
     assert "<Parameter" not in off
-    on = _incoming(_client(_settings(phone_web_call_as_enabled=True), _Service()), form)
+    on = _incoming(_client(_settings(phone_web_call_as_enabled=True, **allow), _Service()), form)
     p = _params(on)
     assert p["caller"] == PHONE and p["caller_source"] == "web_call_as"
+
+
+def test_incoming_call_as_is_limited_to_the_allowlist() -> None:
+    """Otherwise the console is an oracle: type any number, hear its owner's
+    first name and car. Empty list = deny all."""
+    form = {"CallSid": "CA1", "From": "client:proton-web-caller", "callAs": "0123456789"}
+    listed = _settings(phone_web_call_as_enabled=True, phone_web_call_as_numbers="+60000000101")
+    assert "<Parameter" not in _incoming(_client(listed, _Service()), form)
+    empty = _settings(phone_web_call_as_enabled=True)
+    form_ok = {**form, "callAs": "+60000000101"}
+    assert "<Parameter" not in _incoming(_client(empty, _Service()), form_ok)
 
 
 def test_incoming_pstn_call_ignores_call_as() -> None:

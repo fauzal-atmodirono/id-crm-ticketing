@@ -13,4 +13,4 @@ def test_caller_tools_declare_names_and_parameters() -> None:
     assert not save.parameters.required  # every field is optional
     lookup = LOOKUP_CALLER_TOOL.function_declarations[0]
     assert lookup.name == "lookup_caller"
-    assert lookup.parameters.required == ["mobile_number"]
+    assert lookup.parameters.required == ["mobile_number", "caller_name"]

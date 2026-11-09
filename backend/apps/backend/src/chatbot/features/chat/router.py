@@ -44,6 +44,7 @@ from chatbot.features.chat.phone.caller_context import (
     build_caller_instruction,
     mask,
     normalise_mobile,
+    parse_number_list,
     sign_caller,
     usable_caller_id,
     verify_caller,
@@ -1622,6 +1623,14 @@ class ChatRouter:
         ):
             phone = normalise_mobile(params.get("callAs"))
             source = SOURCE_WEB_CALL_AS
+            # Fix round 1: only allowlisted demo numbers. Any number at all
+            # would make the console a lookup oracle (pick a number, hear its
+            # owner's first name and car). Empty list = deny all.
+            if phone is not None and phone not in parse_number_list(
+                settings.phone_web_call_as_numbers
+            ):
+                _log.warning("phone_call_as_not_allowlisted", phone=mask(phone))
+                phone = None
         if phone is None:
             return None
         _log.info("phone_caller_context_number", call_sid=call_sid, phone=mask(phone), source=source)

@@ -528,14 +528,18 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         for contact in (search or {}).get("payload") or []:
             if contact.get("identifier") == session_id and contact.get("id") is not None:
                 return int(contact["id"])
-        if customer_phone:
+        if customer_phone and self._settings.phone_caller_context_enabled:
             # 2026-11-09 caller context: Chatwoot keeps phone_number unique per
             # account, so a create carrying a number that already belongs to a
-            # customer 422s. That customer IS who is calling -- attach to
+            # customer 422s. That customer is who is calling -- attach to
             # them (exact digits-only, country-code tolerant match, the same
-            # rule Customer 360 uses), rather than leaving the call without a
-            # contact at all. Unreachable when no phone is passed (every
-            # caller before this change).
+            # rule Customer 360 uses), rather than leaving the conversation
+            # without a contact. Gated on the flag because OTHER callers pass a
+            # phone too (the WhatsApp/web escalation paths): with the flag
+            # off, their 422 still ends in "no contact", exactly as before;
+            # with it on they attach to the number's contact as well (the
+            # same customer), and _existing_conversation_id keeps them out of
+            # that contact's open phone cases.
             from chatbot.features.chat.customer360_router import (  # noqa: PLC0415 -- avoid an import cycle
                 _phones_match,
             )
@@ -609,6 +613,16 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
                 c
                 for c in active
                 if (c.get("additional_attributes") or {}).get("session_id") == session_id
+            ]
+        else:
+            # Never reuse a phone call's conversation for another session (a
+            # WhatsApp message from a customer whose call case is open).
+            active = [
+                c
+                for c in active
+                if not str(
+                    (c.get("additional_attributes") or {}).get("session_id") or ""
+                ).startswith("phone-")
             ]
         if not active:
             return None
@@ -1009,7 +1023,11 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         res = await self._request("GET", f"/contacts/{contact_id}/conversations", None)
         for conv in _conversations_from(res):
             source_id = conv.get("source_id")
-            if source_id is not None and str(source_id) == session_id:
+            # Chatwoot's conversation JSON carries no source_id, so the
+            # session id stamped into additional_attributes on create (caller
+            # context) is what actually matches after a restart.
+            stamped = (conv.get("additional_attributes") or {}).get("session_id")
+            if stamped == session_id or (source_id is not None and str(source_id) == session_id):
                 cid = conv.get("id")
                 if cid is not None:
                     return str(cid)

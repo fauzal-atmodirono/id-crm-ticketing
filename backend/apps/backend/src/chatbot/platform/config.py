@@ -677,6 +677,10 @@ class Settings(BaseSettings):
     # Demo/test tenants only -- it lets a browser user pick whose record the
     # assistant sees.
     phone_web_call_as_enabled: bool = False
+    # The ONLY numbers a browser call may claim (comma list, any Malaysian /
+    # E.164 form). Empty (default) = deny all, even with the flag on, so the
+    # console cannot be used to look up arbitrary numbers.
+    phone_web_call_as_numbers: str = ""
 
     # --- Pre-filled handoff note (2026-11-09) ------------------------------
     # See features/chat/handoff_note.py. On: every AI -> human handoff (the

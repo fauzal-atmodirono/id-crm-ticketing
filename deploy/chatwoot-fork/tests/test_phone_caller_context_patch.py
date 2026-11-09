@@ -52,6 +52,13 @@ def test_ring_card_reads_caller_context_params(tree):
     assert "[incoming.vehicle, incoming.dealer].filter(Boolean).join(' · ')" in panel
 
 
+def test_ring_card_marks_an_unverified_number(tree):
+    sp = (tree / SP).read_text()
+    assert "params.get('caller_unverified') === '1'" in sp
+    panel = (tree / PANEL).read_text()
+    assert 'v-if="incoming?.callerUnverified"' in panel and "(unverified)" in panel
+
+
 def test_accept_opens_conversation_and_customer360_in_the_click(tree):
     panel = (tree / PANEL).read_text()
     assert '@click.capture="onPanelClickCapture"' in panel

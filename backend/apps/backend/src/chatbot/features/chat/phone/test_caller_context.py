@@ -18,9 +18,12 @@ from chatbot.features.chat.phone.caller_context import (
     caller_view,
     dealer_display,
     match_dealer,
+    names_match,
     normalise_mobile,
     parse_caller_details,
+    parse_number_list,
     sign_caller,
+    spoken_match_guidance,
     usable_caller_id,
     verify_caller,
 )
@@ -82,7 +85,7 @@ def test_caller_signature_binds_call_source_and_number() -> None:
 
 # --- dealer matching -------------------------------------------------------
 
-SLUGS = ["petaling_jaya", "caroline_motor", "komang_motor"]
+SLUGS = ["petaling_jaya", "caroline_motor", "komang_motor", "sentul"]
 
 
 @pytest.mark.parametrize(
@@ -95,6 +98,11 @@ SLUGS = ["petaling_jaya", "caroline_motor", "komang_motor"]
         ("Shah Alam service centre", None),
         ("motor", None),  # ambiguous: two dealers share the token
         ("", None),
+        # one-word slug: only an exact (compact) match, never one word of a
+        # longer name
+        ("Sentul", "sentul"),
+        ("the Sentul service centre", "sentul"),
+        ("Sentul Jaya Motors", None),
     ],
 )
 def test_match_dealer(spoken: str, want: str | None) -> None:
@@ -192,9 +200,59 @@ def test_instruction_two_cars_asks_which() -> None:
     assert "Proton X70" in text and "Proton Persona" in text
 
 
-def test_instruction_spoken_number_caller_says_name_first() -> None:
-    text = build_caller_instruction(_ctx([AHMAD], source="spoken"), lookup_tool=True)
-    assert "say their name first" in text
+def test_instruction_no_number_asks_for_number_and_name_together() -> None:
+    text = build_caller_instruction(None, lookup_tool=True)
+    assert "caller_name" in text and "mobile number" in text
+
+
+def test_model_view_has_no_open_case_count() -> None:
+    view = caller_view(_ctx([{**AHMAD, "open_cases": 3}]))
+    assert "open_cases" not in repr(view)
+    text = build_caller_instruction(_ctx([{**AHMAD, "open_cases": 3}]), lookup_tool=False)
+    assert "open case" not in text
+
+
+@pytest.mark.parametrize(
+    ("said", "first", "want"),
+    [
+        ("Ahmad", "Ahmad", True),
+        ("ahmad bin ali", "Ahmad", True),
+        ("Mad", "Ahmad", False),
+        ("Ahmed", "Ahmad", False),
+        ("Nurul Huda", "Nurul", True),
+        ("Nur", "Nurul", True),  # prefix-tolerant (a short form of the same name)
+        ("Siti", "Ahmad", False),
+        ("", "Ahmad", False),
+        ("Ahmad", "", False),
+        ("Lim", "Lim", True),
+        ("Li", "Lim", False),  # too short to be a prefix match
+    ],
+)
+def test_names_match(said: str, first: str, want: bool) -> None:
+    assert names_match(said, first) is want
+
+
+def test_demo_tag_is_not_a_first_name() -> None:
+    ctx = _ctx([{**AHMAD, "name": "[DEMO] Ahmad"}])
+    assert ctx.candidates[0].first_name == "Ahmad"
+    assert ctx.candidates[0].name == "[DEMO] Ahmad"  # the full name is kept (ring card)
+    assert caller_view(ctx)["customers"][0]["first_name"] == "Ahmad"
+    assert "[DEMO]" not in build_caller_instruction(ctx, lookup_tool=False)
+    assert names_match("Ahmad", "[DEMO] Ahmad")
+    assert _ctx([{**AHMAD, "name": "[demo]  "}]).candidates[0].first_name == ""
+
+
+def test_lookup_guidance_for_a_spoken_match_has_no_name() -> None:
+    ctx = _ctx([AHMAD], source="spoken")
+    text = spoken_match_guidance(ctx.candidates[0])
+    assert "Ahmad" not in text and "Proton X50" in text and "1101" in text
+
+
+def test_number_allowlist_parses_and_normalises() -> None:
+    assert parse_number_list(" +60000000101, 0000000102 ,junk,,") == frozenset(
+        {"+60000000101", "+60000000102"}
+    )
+    assert parse_number_list("") == frozenset()
 
 
 # --- the service -----------------------------------------------------------
@@ -388,7 +446,12 @@ async def test_save_writes_conversation_attributes_and_fills_empty_contact_field
         name="Hafiz", plate="DMO1106", model="Proton Saga", dealer_text="Shah Alam service centre"
     )
     await _service(cw).save(
-        ticket_id="T-1", phone="+60000000105", source="caller_id", details=details, dealer_slug=None
+        ticket_id="T-1",
+        phone="+60000000105",
+        source="caller_id",
+        details=details,
+        dealer_slug=None,
+        contact_writes=True,
     )
     ticket, attrs = cw.conv_attrs[-1]
     assert ticket == "T-1"
@@ -421,11 +484,85 @@ async def test_save_never_overwrites_a_real_contact_name_or_plate() -> None:
         source="caller_id",
         details=details,
         dealer_slug="petaling_jaya",
+        contact_writes=True,
     )
     attrs = cw.conv_attrs[-1][1]
     assert attrs["caller_dealer"] == "petaling_jaya"
     assert attrs["caller_name"] == "Siti"
     assert cw.contact_updates == []  # nothing to fill in
+
+
+async def test_save_without_contact_writes_touches_only_the_conversation() -> None:
+    """A spoken number nobody confirmed must never rename or re-plate the
+    contact that number belongs to."""
+    cw = _FakeChatwoot(
+        contacts=[{"id": 21, "name": "Customer", "phone_number": PHONE, "custom_attributes": {}}]
+    )
+    await _service(cw).save(
+        ticket_id="T-1",
+        phone=PHONE,
+        source="spoken",
+        details=CallerDetails(name="Hafiz", plate="DMO1106"),
+        dealer_slug=None,
+        contact_writes=False,
+    )
+    assert cw.conv_attrs and cw.contact_updates == [] and cw.searches == []
+
+
+async def test_save_skips_contact_writes_when_the_number_matches_several_contacts() -> None:
+    cw = _FakeChatwoot(
+        contacts=[
+            {"id": 21, "name": "Customer", "phone_number": PHONE},
+            {"id": 22, "name": "Customer", "phone_number": "60000000101"},
+        ]
+    )
+    await _service(cw).save(
+        ticket_id="T-1",
+        phone=PHONE,
+        source="caller_id",
+        details=CallerDetails(name="Hafiz"),
+        dealer_slug=None,
+        contact_writes=True,
+    )
+    assert cw.contact_updates == []
+
+
+async def test_web_call_as_only_writes_to_a_demo_contact() -> None:
+    """Ruling R34: a console persona call never edits a real customer."""
+    real = _FakeChatwoot(contacts=[{"id": 21, "name": "Customer", "phone_number": PHONE}])
+    await _service(real).save(
+        ticket_id="T-1",
+        phone=PHONE,
+        source="web_call_as",
+        details=CallerDetails(name="Hafiz"),
+        dealer_slug=None,
+        contact_writes=True,
+    )
+    assert real.contact_updates == []
+    demo = _FakeChatwoot(
+        contacts=[
+            {"id": 22, "name": "[DEMO] Ahmad", "phone_number": PHONE, "custom_attributes": {}}
+        ]
+    )
+    await _service(demo).save(
+        ticket_id="T-1",
+        phone=PHONE,
+        source="web_call_as",
+        details=CallerDetails(plate="DMO1101"),
+        dealer_slug=None,
+        contact_writes=True,
+    )
+    assert demo.contact_updates == [(22, {"custom_attributes": {"vehicle_no": "DMO1101"}})]
+
+
+def test_spoken_lookups_are_rate_limited_per_number_across_calls() -> None:
+    now = [0.0]
+    svc = CallerContextService(_FakeChatwoot(), _settings(), clock=lambda: now[0])
+    assert all(svc.allow_spoken_lookup(PHONE) for _ in range(5))
+    assert not svc.allow_spoken_lookup(PHONE)
+    assert svc.allow_spoken_lookup("+60000000102")  # per number
+    now[0] += 3601
+    assert svc.allow_spoken_lookup(PHONE)  # the window slides
 
 
 async def test_save_records_unverified_number_on_the_conversation() -> None:

@@ -45,9 +45,9 @@ LOOKUP_CALLER_TOOL = types.Tool(
         types.FunctionDeclaration(
             name="lookup_caller",
             description=(
-                "Look up the customer record for the mobile number the caller just told you "
-                "(only when their number could not be detected). Follow the `guidance` in "
-                "the result."
+                "Check the mobile number and name the caller just told you against our "
+                "records (only when their number could not be detected). Ask for BOTH "
+                "first. The answer is only match or no_match; follow its `guidance`."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
@@ -55,9 +55,13 @@ LOOKUP_CALLER_TOOL = types.Tool(
                     "mobile_number": types.Schema(
                         type=types.Type.STRING,
                         description="The mobile number exactly as the caller said it, digits only.",
-                    )
+                    ),
+                    "caller_name": types.Schema(
+                        type=types.Type.STRING,
+                        description="The caller's name exactly as THEY said it; never a guess.",
+                    ),
                 },
-                required=["mobile_number"],
+                required=["mobile_number", "caller_name"],
             ),
         )
     ]

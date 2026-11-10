@@ -56,7 +56,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from chatbot.features.authz.data_scope import (
     Scope,
@@ -140,13 +140,14 @@ def _plate_variants(query: str) -> list[str]:
 # anything with punctuation ("e.MAS 7") are deliberately NOT plate-like.
 _PLATE_LIKE_RE = re.compile(r"^[A-Za-z]{2,3}[\s-]?\d{1,4}[A-Za-z]?$")
 
-_PLATE_MIN_CHARS, _PLATE_MAX_CHARS = 4, 12
+# 16, not 12: special plates such as "PUTRAJAYA 1234" (13) are real (brief 11).
+_PLATE_MIN_CHARS, _PLATE_MAX_CHARS = 4, 16
 _PLATE_GROUPS_RE = re.compile(r"^[A-Za-z0-9]+(?:[\s-][A-Za-z0-9]+){0,2}$")
 
 
 def _plate_shaped(query: str) -> bool:
     """Whether the RSA-phone fallback may run for this query: the classic
-    ``_PLATE_LIKE_RE`` shape, or a letters+digits plate of 4-12 characters in
+    ``_PLATE_LIKE_RE`` shape, or a letters+digits plate of 4-16 characters in
     at most three space/dash groups (``TEST ABC123V``, ``W 1234 B``). Model
     names (``X50``, ``e.MAS 7``) and words (``flat tyre``) are not."""
     q = query.strip()
@@ -611,5 +612,48 @@ def build_customer360_router(
         if dms_block is not None:
             result["dms"] = dms_block
         return pii.apply(result)
+
+    # Brief 11: the conversation side panel's "DMS / Vehicle" card. Same
+    # permission, scope and PII policy as /search, and the same
+    # _build_dms_block -- there is no second DMS client. Two cheap calls
+    # instead of /search per conversation: /dms/status is fetched once per
+    # page (the card then says "not connected" without any per-conversation
+    # request), and /dms runs ONLY the DMS side-trip, none of the CRM
+    # fan-out /search does.
+    @router.get("/dms/status", dependencies=[Depends(view_360)])
+    async def dms_status() -> dict[str, Any]:
+        """``connected`` only when the stored config is enabled AND a client
+        is wired -- enabled-but-unwired must read as "not connected", the
+        same rule _build_dms_block follows. Never raises."""
+        if dms_config_store is None or dms_client is None:
+            return {"connected": False, "mock": False}
+        try:
+            config = await dms_config_store.get()
+        except Exception as exc:
+            _log.warning("dms_customer360_status_failed", error_type=type(exc).__name__)
+            return {"connected": False, "mock": False}
+        if config is None or not config.enabled:
+            return {"connected": False, "mock": False}
+        return {"connected": True, "mock": isinstance(dms_client, MockDmsClient)}
+
+    @router.get("/dms", dependencies=[Depends(view_360)])
+    async def dms_lookup(
+        phone: str | None = Query(default=None, max_length=32),
+        vehicle_no: str | None = Query(default=None, max_length=32),
+        scope: Scope = Depends(data_scope),
+        pii: PiiPolicy = Depends(pii_policy),
+    ) -> dict[str, Any]:
+        """``{"dms": block}`` for one customer; ``block`` is ``None`` when the
+        integration is off (the shape /search omits the key for)."""
+        phone = (phone or "").strip() or None
+        vehicle_no = (vehicle_no or "").strip() or None
+        if phone is None and vehicle_no is None:
+            raise HTTPException(status_code=422, detail="phone or vehicle_no is required")
+        if scope.deny_all:
+            return {"dms": None}
+        block = await _build_dms_block(
+            dms_config_store, dms_client, phone=phone, vehicle_no=vehicle_no
+        )
+        return pii.apply({"dms": block})
 
     return router

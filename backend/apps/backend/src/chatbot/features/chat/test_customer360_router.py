@@ -1136,3 +1136,130 @@ async def test_exact_contact_hit_suppresses_rsa_fallback(tmp_path, respx_mock):
 def test_typed_variant_strips_like_wildcards():
     variants = _plate_variants("ab%c_1 2")
     assert all("%" not in v and "_" not in v for v in variants)
+
+
+# --- Brief 11: special plates up to 16 characters ------------------------
+
+
+def test_special_plate_up_to_16_characters_is_plate_shaped():
+    assert customer360_module._plate_shaped("PUTRAJAYA 1234")
+    assert customer360_module._plate_shaped("ABCDEFGHIJKL1234")  # exactly 16
+    assert not customer360_module._plate_shaped("ABCDEFGHIJKLM1234")  # 17
+    assert not customer360_module._plate_shaped("flat tyre")
+    assert not customer360_module._plate_shaped("X50")
+
+
+# --- Brief 11: conversation-panel DMS card endpoints -----------------------
+
+
+async def _dms_client_for(tmp_path, name, uid, respx_mock, *, store, client=None,
+                          role="administrator"):
+    settings = get_settings().model_copy(update={"rbac_enabled": True})
+    authz_repo = await _build_authz_repo(tmp_path, name)
+    await seed_defaults(authz_repo)
+    await authz_repo.assign_role(chatwoot_user_id=uid, role_id=role)
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        return_value=httpx.Response(200, json={"id": uid})
+    )
+    chatwoot = _fake_chatwoot()
+    router = build_customer360_router(
+        chatwoot, InMemoryRsaRepository(), authz_repo, TokenValidator(settings), settings,
+        dms_config_store=store, dms_client=client,
+    )
+    return _app_with_router(router), chatwoot
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("store", "client", "connected"),
+    [
+        (None, None, False),
+        (_StubDmsConfigStore(None), None, False),
+        (_StubDmsConfigStore(_dms_config(enabled=False)), MockDmsClient(environment="sandbox"),
+         False),
+        # Enabled but nothing wired: "not connected", never "no record".
+        (_StubDmsConfigStore(_dms_config(enabled=True)), None, False),
+        (_RaisingDmsConfigStore(), MockDmsClient(environment="sandbox"), False),
+        (_StubDmsConfigStore(_dms_config(enabled=True)), _EmptyDmsClient(), True),
+    ],
+)
+async def test_dms_status_reports_connected_only_when_enabled_and_wired(
+    tmp_path, respx_mock, store, client, connected
+):
+    http, chatwoot = await _dms_client_for(tmp_path, "dms_status", 61, respx_mock,
+                                           store=store, client=client)
+    res = http.get("/admin/customer360/dms/status", headers=HEADERS)
+    assert res.status_code == 200
+    assert res.json()["connected"] is connected
+    chatwoot.search_contacts.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dms_status_marks_the_mock_client(tmp_path, respx_mock):
+    http, _ = await _dms_client_for(
+        tmp_path, "dms_status_mock", 62, respx_mock,
+        store=_StubDmsConfigStore(_dms_config(enabled=True)),
+        client=MockDmsClient(environment="sandbox"),
+    )
+    assert http.get("/admin/customer360/dms/status", headers=HEADERS).json() == {
+        "connected": True, "mock": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_dms_endpoints_require_customer360_view(tmp_path, respx_mock):
+    http, _ = await _dms_client_for(
+        tmp_path, "dms_noperm", 63, respx_mock,
+        store=_StubDmsConfigStore(_dms_config(enabled=True)), client=_EmptyDmsClient(),
+        role="agent",
+    )
+    assert http.get("/admin/customer360/dms/status", headers=HEADERS).status_code == 403
+    assert http.get("/admin/customer360/dms?phone=%2B60000000061",
+                    headers=HEADERS).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_dms_lookup_returns_only_the_dms_block(tmp_path, respx_mock):
+    http, chatwoot = await _dms_client_for(
+        tmp_path, "dms_lookup", 64, respx_mock,
+        store=_StubDmsConfigStore(_dms_config(enabled=True)),
+        client=MockDmsClient(environment="sandbox"),
+    )
+    res = http.get("/admin/customer360/dms?phone=%2B60000000064&vehicle_no=VAB1234",
+                   headers=HEADERS)
+    assert res.status_code == 200
+    body = res.json()
+    assert set(body) == {"dms"}
+    assert body["dms"]["status"] == "ok" and body["dms"]["mock"] is True
+    assert body["dms"]["vehicles"] and body["dms"]["service_history"]
+    # No CRM fan-out: this is the cheap per-conversation call.
+    chatwoot.search_contacts.assert_not_awaited()
+    chatwoot.list_conversations.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dms_lookup_no_record_and_unreachable_stay_distinct(tmp_path, respx_mock):
+    empty, _ = await _dms_client_for(
+        tmp_path, "dms_empty", 65, respx_mock,
+        store=_StubDmsConfigStore(_dms_config(enabled=True)), client=_EmptyDmsClient(),
+    )
+    dms = empty.get("/admin/customer360/dms?phone=%2B60000000065", headers=HEADERS).json()["dms"]
+    assert dms["status"] == "ok" and dms["customer"] is None
+
+    down, _ = await _dms_client_for(
+        tmp_path, "dms_down", 66, respx_mock,
+        store=_StubDmsConfigStore(_dms_config(enabled=True)), client=_RaisingDmsClient(),
+    )
+    dms = down.get("/admin/customer360/dms?phone=%2B60000000066", headers=HEADERS).json()["dms"]
+    assert dms["status"] == "unreachable"
+
+
+@pytest.mark.asyncio
+async def test_dms_lookup_disabled_is_null_and_needs_a_key(tmp_path, respx_mock):
+    http, _ = await _dms_client_for(
+        tmp_path, "dms_off", 67, respx_mock,
+        store=_StubDmsConfigStore(_dms_config(enabled=False)), client=_EmptyDmsClient(),
+    )
+    assert http.get("/admin/customer360/dms?phone=%2B60000000067",
+                    headers=HEADERS).json() == {"dms": None}
+    assert http.get("/admin/customer360/dms", headers=HEADERS).status_code == 422

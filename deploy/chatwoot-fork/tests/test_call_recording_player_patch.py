@@ -60,9 +60,17 @@ def test_no_earlier_patch_touches_the_files_0094_edits():
         if p == P0094:
             continue
         text = p.read_text()
-        assert f"b/{CONTACT_PANEL}" not in text, p.name
         assert f"b/{PANEL}" not in text, p.name
         assert f"b/{COMPOSABLE}" not in text, p.name
+        if p.name < P0094.name:
+            assert f"b/{CONTACT_PANEL}" not in text, p.name
+        elif f"b/{CONTACT_PANEL}" in text:
+            # A later patch (0099's DMS card) may add to ContactPanel.vue,
+            # but only add: 0094's lines must survive untouched.
+            assert not [
+                line for line in text.splitlines()
+                if line.startswith("-") and not line.startswith("---")
+            ], p.name
 
 
 def test_contact_panel_mounts_the_player_under_contact_info():

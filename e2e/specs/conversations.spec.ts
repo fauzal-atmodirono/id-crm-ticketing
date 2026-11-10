@@ -11,9 +11,13 @@ const PNG_1PX = Buffer.from(
 );
 const TINY_PDF = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n');
 
-/** Top-of-list tab ("Mine", "Unassigned", "All") as rendered by woot-tabs. */
+/**
+ * Top-of-list tab ("Mine", "Unassigned", "All") as rendered by woot-tabs: the
+ * label plus its count badge, outside the sidebar. A bare /^All\b/ also
+ * matched the sidebar's "All Conversations" link, which keeps the current tab.
+ */
 const listTab = (page: import('@playwright/test').Page, name: string) =>
-  page.locator('li a', { hasText: new RegExp(`^\\s*${name}\\b`) }).first();
+  page.locator('main li a', { hasText: new RegExp(`^\\s*${name}\\s*\\d*\\s*$`) }).first();
 
 /**
  * How many conversations the open list tab holds, after scrolling it to its
@@ -562,7 +566,14 @@ trackerModule('Conversations', {
     // Scoped to the panel's list: the left conversation list previews the same
     // contact's conversations too.
     const prev = page.locator('.contact-conversation--list');
-    if (!(await prev.isVisible({ timeout: 3000 }).catch(() => false))) await page.getByText(/Previous Conversations/i).first().click();
+    // Open the accordion only if it is closed (its header button carries
+    // rounded-bl-none when open). Clicking it while the list was still
+    // fetching closed an open accordion.
+    const header = page.locator('button', { hasText: /^\s*Previous Conversations\s*$/ }).filter({ visible: true }).first();
+    await header.scrollIntoViewIfNeeded();
+    if (!/rounded-bl-none/.test((await header.getAttribute('class')) ?? '')) await header.click();
+    await expect(header, 'Previous Conversations open').toHaveClass(/rounded-bl-none/);
+    await expect(page.getByText('There are no previous conversations associated to this contact.'), 'panel does not say "no previous conversations"').toHaveCount(0);
     await expect(prev.locator('.conversation').first(), 'Previous Conversations lists cards').toBeVisible({ timeout: 20_000 });
     const want = (await others()).length;
     await expect

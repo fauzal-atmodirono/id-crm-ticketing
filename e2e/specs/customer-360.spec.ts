@@ -24,7 +24,10 @@ trackerModule('Customer 360', {
     // search never surfaces a real customer.
     const contact = await data.testContact();
     await data.conversation([`${TEST_PREFIX} vehicle search check`]);
-    const plate = `TEST ${RUN_ID.toUpperCase()}V`;
+    // A plate the backend treats as plate-shaped: 4-12 letters and digits once
+    // normalised (customer360_router._plate_shaped). "TEST <run id>V" is 14 and
+    // never reached the incident-phone lookup. Still unique to the run.
+    const plate = `ZT ${RUN_ID.slice(-8).toUpperCase()} 9`;
     const created = Api.must(
       await api.be('/rsa/incidents', {
         method: 'POST',

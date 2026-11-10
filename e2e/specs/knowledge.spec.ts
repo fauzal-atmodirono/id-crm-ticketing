@@ -162,7 +162,11 @@ trackerModule('Knowledge', {
     await openApp(page, kb('tools'));
     // The tools page shows the title twice (table cell and card), hence first().
     await expect(page.getByText(title).first()).toBeVisible();
-    await expect(page.getByText(`edited ${RUN_ID}`).first()).toBeVisible();
+    // The custom-tools table has no description column (Title, Slug, Method,
+    // Endpoint, Auth, Enabled; patch 0015), so the kept edit is read back from
+    // the same list the page loads.
+    const saved = ((Api.must(await api.be('/kb/tools'), 'tools').custom ?? []) as any[]).find(x => x.slug === slug);
+    expect(saved?.description, 'edited description kept').toBe(`edited ${RUN_ID}`);
     await ev.shot(page);
     Api.must(await api.be(`/kb/tools/${slug}`, { method: 'DELETE' }), 'delete tool');
     ev.add('[TEST] custom tool (disabled) created, edit kept after reload, deleted');

@@ -20,24 +20,34 @@ const listTab = (page: import('@playwright/test').Page, name: string) =>
  * end. Read from the SPA's store (the list renders the store filtered by tab),
  * because the virtualised list keeps only the visible rows in the DOM.
  */
-async function listedConversations(page: import('@playwright/test').Page, assignee: string, meId: number): Promise<number> {
+async function listedConversations(page: import('@playwright/test').Page, assignee: string, meId: number, expected: number): Promise<number> {
   const list = page.locator('.conversations-list').first();
   const eof = page.getByText('All conversations loaded', { exact: false });
-  for (let i = 0; i < 60 && !(await eof.isVisible().catch(() => false)); i++) {
+  const inStore = () =>
+    page.evaluate(
+      ([tab, me]) => {
+        const store = (document.querySelector('#app') as any)?.__vue_app__?.config?.globalProperties?.$store;
+        const all: any[] | undefined = store?.getters?.getAllConversations;
+        if (!Array.isArray(all)) return -1;
+        if (tab === 'me') return all.filter(c => c.meta?.assignee?.id === me).length;
+        if (tab === 'unassigned') return all.filter(c => !c.meta?.assignee).length;
+        return all.length;
+      },
+      [assignee, meId] as [string, number],
+    );
+  // The previous tab's "All conversations loaded" line can still be on screen
+  // right after switching, so EOF alone is not "done": stop when the list holds
+  // the expected number, or when it is at EOF and stopped growing.
+  let n = await inStore();
+  let still = 0;
+  for (let i = 0; i < 80 && n >= 0 && n < expected; i++) {
     await list.evaluate(el => el.scrollTo(0, el.scrollHeight)).catch(() => {});
     await page.waitForTimeout(700);
+    const next = await inStore();
+    still = next === n ? still + 1 : 0;
+    n = next;
+    if (still >= 4 && (await eof.isVisible().catch(() => false))) break;
   }
-  const n = await page.evaluate(
-    ([tab, me]) => {
-      const store = (document.querySelector('#app') as any)?.__vue_app__?.config?.globalProperties?.$store;
-      const all: any[] | undefined = store?.getters?.getAllConversations;
-      if (!Array.isArray(all)) return -1;
-      if (tab === 'me') return all.filter(c => c.meta?.assignee?.id === me).length;
-      if (tab === 'unassigned') return all.filter(c => !c.meta?.assignee).length;
-      return all.length;
-    },
-    [assignee, meId] as [string, number],
-  );
   if (n < 0) throw new Error('could not read the conversation list from the SPA store; count the rows by hand');
   return n;
 }
@@ -70,7 +80,7 @@ trackerModule('Conversations', {
       // The list is virtualised (virtua): only the rows on screen exist in the
       // DOM, and it loads 25 at a time as you scroll. So scroll it to the end
       // ("All conversations loaded") and count what the list holds.
-      const rows = await listedConversations(page, assignee, me.id);
+      const rows = await listedConversations(page, assignee, me.id, count);
       expect(rows, `${name}: conversations in the list vs tab count ${count}`).toBe(count);
       ev.add(`${name}: tab ${count}, rows ${rows}, API ${r.ms} ms, page ${uiMs} ms`);
     }
@@ -220,10 +230,16 @@ trackerModule('Conversations', {
     // Chatwoot capitalises each word of {{contact.name}} when it fills it in.
     await expect(editor).toContainText(new RegExp(contact.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
     ev.add('canned response inserted with {{contact.name}} filled in');
-    await page.locator('input[type="file"]').first().setInputFiles([
+    // The page has more than one file input (the first takes images only, one
+    // at a time); use the composer's, which accepts PDFs, and attach the files
+    // one by one unless it allows several at once.
+    const files = [
       { name: 'test-image.png', mimeType: 'image/png', buffer: PNG_1PX },
       { name: 'test-doc.pdf', mimeType: 'application/pdf', buffer: TINY_PDF },
-    ]);
+    ];
+    const input = page.locator('input[type="file"]:not([accept]), input[type="file"][accept*="pdf"]').first();
+    if ((await input.getAttribute('multiple')) !== null) await input.setInputFiles(files);
+    else for (const f of files) await input.setInputFiles(f);
     await page.waitForTimeout(1500);
     await ev.shot(page);
     await data.assertSendable(conv.id);
@@ -531,19 +547,28 @@ trackerModule('Conversations', {
     const first = await data.conversation([`${TEST_PREFIX} brake noise after service`]);
     Api.must(await api.cw(`conversations/${first.id}/toggle_status`, { method: 'POST', body: { status: 'resolved' } }), 'resolve first');
     const second = await data.conversation([`${TEST_PREFIX} brake noise is back`]);
-    // A Previous Conversations card previews the conversation's LAST message,
-    // which after resolving is no longer the customer's first line (automatic
-    // notes and lifecycle messages follow it), so look for that preview.
-    const last = Api.must(await api.cw(`conversations/${first.id}`), 'first conversation').last_non_activity_message?.content ?? '';
-    const preview = String(last).replace(/\s+/g, ' ').trim().slice(0, 30) || 'brake noise after service';
+    // A Previous Conversations card shows no case id, and its preview (the last
+    // message) keeps changing after resolve as automatic notes arrive, and the
+    // run's [TEST] contact has many look-alike cases. So: the earlier case must
+    // be among the contact's other conversations, and the panel must list all
+    // of them.
+    const others = async () =>
+      ((Api.must(await api.cw(`contacts/${first.contactId}/conversations`), 'contact conversations').payload ?? []) as any[])
+        .map(c => c.id as number)
+        .filter(id => id !== second.id);
+    expect(await others(), `earlier case #${first.id} is one of the contact's other conversations`).toContain(first.id);
     await openConversation(page, second.id);
     await openContactPanel(page);
     // Scoped to the panel's list: the left conversation list previews the same
     // contact's conversations too.
     const prev = page.locator('.contact-conversation--list');
     if (!(await prev.isVisible({ timeout: 3000 }).catch(() => false))) await page.getByText(/Previous Conversations/i).first().click();
-    await expect(prev.locator('.conversation', { hasText: preview }).first(), `earlier case #${first.id} under Previous Conversations`).toBeVisible({ timeout: 20_000 });
-    ev.add(`[TEST] conv ${second.id} shows the earlier [TEST] case #${first.id} under Previous Conversations; no automatic merge`);
+    await expect(prev.locator('.conversation').first(), 'Previous Conversations lists cards').toBeVisible({ timeout: 20_000 });
+    const want = (await others()).length;
+    await expect
+      .poll(() => prev.locator('.conversation').count(), { timeout: 20_000, message: `Previous Conversations lists all ${want} earlier cases (incl. #${first.id})` })
+      .toBe(want);
+    ev.add(`[TEST] conv ${second.id}: Previous Conversations lists all ${want} earlier cases of the contact, including #${first.id}; no automatic merge`);
     await ev.shot(page);
   },
 });

@@ -675,3 +675,99 @@ async def test_dealer_and_case_aging_csv_exports_follow_their_json_routes(tmp_pa
         "/metrics/dealer-escalation/export", headers={"x-api-key": METRICS_KEY, **session("admin")}
     )
     assert "penang" in admin.text
+
+
+# --- Brief 11 / R59: the conversation-panel DMS card ------------------------
+
+
+class _DealerDms:
+    """A reachable DMS whose customer owns one KL and one Penang car."""
+
+    async def find_customer(self, *, phone, vehicle_no):
+        from chatbot.features.chat.dms_client import DmsCustomer
+
+        return DmsCustomer(ref="C1", name="Card Owner", phone=phone)
+
+    async def list_vehicles(self, customer_ref):
+        from chatbot.features.chat.dms_client import DmsVehicle
+
+        return [
+            DmsVehicle(vehicle_no="VKL1", model="X50", purchased_from="kl"),
+            DmsVehicle(vehicle_no="VPG1", model="S70", purchased_from="penang"),
+        ]
+
+    async def list_service_history(self, vehicle_no):
+        from chatbot.features.chat.dms_client import DmsServiceRecord
+
+        dealer = "kl" if vehicle_no == "VKL1" else "penang"
+        return [DmsServiceRecord(date="2026-10-01", description=f"svc {vehicle_no}", dealer=dealer)]
+
+
+class _DmsStore:
+    async def get(self):
+        from chatbot.features.chat.dms_config_store import DmsConfig
+
+        return DmsConfig(
+            enabled=True, provider_label="DMS", base_url="https://dms.example.com",
+            auth_type="api_key_header", extra_header_name="", extra_header_value="",
+            timeout_seconds=5.0, retries=0,
+        )
+
+
+def _dms_c360(repo, chatwoot):
+    return _client(
+        build_customer360_router(
+            chatwoot, InMemoryRsaRepository(), repo, FakeValidator(TOKENS), scoped_settings(),
+            dms_config_store=_DmsStore(), dms_client=_DealerDms(),
+        )
+    )
+
+
+def _card_conversation(labels):
+    return _conv(1, 3, labels, meta={"sender": {"id": 11, "phone_number": "+60000000011"}})
+
+
+async def test_dms_card_conversation_out_of_scope_is_null(tmp_path) -> None:
+    repo = await _repo_with_scoped_user(tmp_path, Scope.build(inbox_ids=[4]), "customer360.view")
+    chatwoot = AsyncMock()
+    chatwoot.get_conversation.return_value = _card_conversation([])
+    client = _dms_c360(repo, chatwoot)
+    assert client.get("/admin/customer360/dms?conversation_id=1",
+                      headers=session("scoped")).json() == {"dms": None}
+    assert client.get("/admin/customer360/dms?conversation_id=1",
+                      headers=session("plain")).json()["dms"]["status"] == "ok"
+
+
+async def test_dms_card_returns_null_under_deny_all(tmp_path) -> None:
+    repo = await _repo_with_scoped_user(tmp_path, Scope.build(inbox_ids=[3]), "customer360.view")
+
+    async def _boom(user_id):
+        raise RuntimeError("down")
+
+    repo.effective_scope = _boom  # type: ignore[method-assign]
+    chatwoot = AsyncMock()
+    client = _dms_c360(repo, chatwoot)
+    assert client.get("/admin/customer360/dms?conversation_id=1",
+                      headers=session("scoped")).json() == {"dms": None}
+    chatwoot.get_conversation.assert_not_called()
+
+
+async def test_dealer_scoped_caller_sees_only_own_dealer_dms_rows(tmp_path) -> None:
+    repo = await _repo_with_scoped_user(tmp_path, Scope.build(dealer_slugs=["kl"]), "customer360.view")
+    chatwoot = AsyncMock()
+    chatwoot.get_conversation.return_value = _card_conversation(["dealer_kl"])
+    chatwoot.search_contacts.return_value = []
+    chatwoot.list_contact_conversations.return_value = []
+    client = _dms_c360(repo, chatwoot)
+
+    card = client.get("/admin/customer360/dms?conversation_id=1", headers=session("scoped")).json()
+    assert [v["vehicle_no"] for v in card["dms"]["vehicles"]] == ["VKL1"]
+    assert [r["description"] for r in card["dms"]["service_history"]] == ["svc VKL1"]
+
+    # /search's DMS block is narrowed the same way.
+    found = client.get("/admin/customer360/search?q=+60000000011", headers=session("scoped")).json()
+    assert [v["vehicle_no"] for v in found["dms"]["vehicles"]] == ["VKL1"]
+    assert [r["dealer"] for r in found["dms"]["service_history"]] == ["kl"]
+
+    plain = client.get("/admin/customer360/dms?conversation_id=1", headers=session("plain")).json()
+    assert len(plain["dms"]["vehicles"]) == 2

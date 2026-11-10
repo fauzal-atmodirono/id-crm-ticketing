@@ -1206,6 +1206,24 @@ async def test_dms_status_marks_the_mock_client(tmp_path, respx_mock):
     }
 
 
+def _card_conv(*, phone="+60000000064", vehicle_no=None, vehicle_plate=None, inbox=1):
+    sender = {"id": 70, "phone_number": phone, "custom_attributes": {}}
+    if vehicle_no:
+        sender["custom_attributes"]["vehicle_no"] = vehicle_no
+    attrs = {"vehicle_plate": vehicle_plate} if vehicle_plate else {}
+    return {"id": 900, "inbox_id": inbox, "labels": [], "custom_attributes": attrs,
+            "meta": {"sender": sender}}
+
+
+class _RecordingDmsClient(_EmptyDmsClient):
+    def __init__(self) -> None:
+        self.calls: list[tuple[str | None, str | None]] = []
+
+    async def find_customer(self, *, phone, vehicle_no):
+        self.calls.append((phone, vehicle_no))
+        return None
+
+
 @pytest.mark.asyncio
 async def test_dms_endpoints_require_customer360_view(tmp_path, respx_mock):
     http, _ = await _dms_client_for(
@@ -1214,52 +1232,154 @@ async def test_dms_endpoints_require_customer360_view(tmp_path, respx_mock):
         role="agent",
     )
     assert http.get("/admin/customer360/dms/status", headers=HEADERS).status_code == 403
-    assert http.get("/admin/customer360/dms?phone=%2B60000000061",
+    assert http.get("/admin/customer360/dms?conversation_id=900",
                     headers=HEADERS).status_code == 403
 
 
 @pytest.mark.asyncio
-async def test_dms_lookup_returns_only_the_dms_block(tmp_path, respx_mock):
+async def test_dms_lookup_is_keyed_by_conversation(tmp_path, respx_mock):
     http, chatwoot = await _dms_client_for(
         tmp_path, "dms_lookup", 64, respx_mock,
         store=_StubDmsConfigStore(_dms_config(enabled=True)),
         client=MockDmsClient(environment="sandbox"),
     )
-    res = http.get("/admin/customer360/dms?phone=%2B60000000064&vehicle_no=VAB1234",
-                   headers=HEADERS)
+    chatwoot.get_conversation.return_value = _card_conv()
+    res = http.get("/admin/customer360/dms?conversation_id=900", headers=HEADERS)
     assert res.status_code == 200
     body = res.json()
     assert set(body) == {"dms"}
     assert body["dms"]["status"] == "ok" and body["dms"]["mock"] is True
     assert body["dms"]["vehicles"] and body["dms"]["service_history"]
+    chatwoot.get_conversation.assert_awaited_once_with("900")
     # No CRM fan-out: this is the cheap per-conversation call.
     chatwoot.search_contacts.assert_not_awaited()
     chatwoot.list_conversations.assert_not_awaited()
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("conv", "expected"),
+    [
+        # Phone first: the plate is not sent when there is a phone.
+        (_card_conv(vehicle_no="VAB1234"), ("+60000000064", None)),
+        # Plate as fallback: contact vehicle_no, then the case's vehicle_plate.
+        (_card_conv(phone=None, vehicle_no="VAB1234", vehicle_plate="VZZ9"), (None, "VAB1234")),
+        (_card_conv(phone=None, vehicle_plate="VZZ9"), (None, "VZZ9")),
+    ],
+)
+async def test_dms_lookup_sends_phone_first_plate_as_fallback(
+    tmp_path, respx_mock, conv, expected
+):
+    dms = _RecordingDmsClient()
+    http, chatwoot = await _dms_client_for(
+        tmp_path, "dms_keys", 68, respx_mock,
+        store=_StubDmsConfigStore(_dms_config(enabled=True)), client=dms,
+    )
+    chatwoot.get_conversation.return_value = conv
+    body = http.get("/admin/customer360/dms?conversation_id=900", headers=HEADERS).json()
+    assert dms.calls == [expected]
+    assert body["dms"]["status"] == "ok" and body["dms"]["customer"] is None
+
+
+@pytest.mark.asyncio
+async def test_dms_lookup_without_any_key_asks_no_dms(tmp_path, respx_mock):
+    dms = _RecordingDmsClient()
+    http, chatwoot = await _dms_client_for(
+        tmp_path, "dms_nokey", 69, respx_mock,
+        store=_StubDmsConfigStore(_dms_config(enabled=True)), client=dms,
+    )
+    chatwoot.get_conversation.return_value = _card_conv(phone=None)
+    body = http.get("/admin/customer360/dms?conversation_id=900", headers=HEADERS).json()
+    assert dms.calls == []
+    assert body["dms"]["status"] == "ok" and body["dms"]["customer"] is None
+
+
+@pytest.mark.asyncio
 async def test_dms_lookup_no_record_and_unreachable_stay_distinct(tmp_path, respx_mock):
-    empty, _ = await _dms_client_for(
+    empty, cw1 = await _dms_client_for(
         tmp_path, "dms_empty", 65, respx_mock,
         store=_StubDmsConfigStore(_dms_config(enabled=True)), client=_EmptyDmsClient(),
     )
-    dms = empty.get("/admin/customer360/dms?phone=%2B60000000065", headers=HEADERS).json()["dms"]
+    cw1.get_conversation.return_value = _card_conv()
+    dms = empty.get("/admin/customer360/dms?conversation_id=900", headers=HEADERS).json()["dms"]
     assert dms["status"] == "ok" and dms["customer"] is None
 
-    down, _ = await _dms_client_for(
+    down, cw2 = await _dms_client_for(
         tmp_path, "dms_down", 66, respx_mock,
         store=_StubDmsConfigStore(_dms_config(enabled=True)), client=_RaisingDmsClient(),
     )
-    dms = down.get("/admin/customer360/dms?phone=%2B60000000066", headers=HEADERS).json()["dms"]
+    cw2.get_conversation.return_value = _card_conv()
+    dms = down.get("/admin/customer360/dms?conversation_id=900", headers=HEADERS).json()["dms"]
     assert dms["status"] == "unreachable"
 
 
 @pytest.mark.asyncio
-async def test_dms_lookup_disabled_is_null_and_needs_a_key(tmp_path, respx_mock):
-    http, _ = await _dms_client_for(
+async def test_dms_lookup_disabled_or_missing_conversation_is_null(tmp_path, respx_mock):
+    off, cw = await _dms_client_for(
         tmp_path, "dms_off", 67, respx_mock,
         store=_StubDmsConfigStore(_dms_config(enabled=False)), client=_EmptyDmsClient(),
     )
-    assert http.get("/admin/customer360/dms?phone=%2B60000000067",
-                    headers=HEADERS).json() == {"dms": None}
-    assert http.get("/admin/customer360/dms", headers=HEADERS).status_code == 422
+    cw.get_conversation.return_value = _card_conv()
+    assert off.get("/admin/customer360/dms?conversation_id=900",
+                   headers=HEADERS).json() == {"dms": None}
+    # Integration off: not even the conversation is fetched.
+    cw.get_conversation.assert_not_awaited()
+
+    on, cw = await _dms_client_for(
+        tmp_path, "dms_gone", 71, respx_mock,
+        store=_StubDmsConfigStore(_dms_config(enabled=True)), client=_EmptyDmsClient(),
+    )
+    cw.get_conversation.return_value = None
+    assert on.get("/admin/customer360/dms?conversation_id=900",
+                  headers=HEADERS).json() == {"dms": None}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["", "?conversation_id=", "?conversation_id=12a",
+                                   "?conversation_id=-1", "?phone=%2B60000000067",
+                                   "?conversation_id=1234567890123"])
+async def test_dms_lookup_takes_only_a_digit_conversation_id(tmp_path, respx_mock, query):
+    http, cw = await _dms_client_for(
+        tmp_path, "dms_422", 72, respx_mock,
+        store=_StubDmsConfigStore(_dms_config(enabled=True)), client=_EmptyDmsClient(),
+    )
+    assert http.get(f"/admin/customer360/dms{query}", headers=HEADERS).status_code == 422
+    cw.get_conversation.assert_not_awaited()
+
+
+# --- R60: no phone / plate / query in the access log ------------------------
+
+
+def test_customer360_queries_are_redacted_from_the_uvicorn_access_log():
+    import logging
+
+    customer360_module.install_customer360_access_log_redaction()
+    customer360_module.install_customer360_access_log_redaction()  # idempotent
+    logger = logging.getLogger("uvicorn.access")
+    redactors = [
+        f for f in logger.filters
+        if isinstance(f, customer360_module.Customer360QueryRedactor)
+    ]
+    assert len(redactors) == 1
+    record = logging.LogRecord(
+        "uvicorn.access", logging.INFO, __file__, 1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("10.0.0.1:5", "GET",
+         "/admin/customer360/search?q=%2B60000000099&x=1", "1.1", 200),
+        None,
+    )
+    assert logger.filter(record)
+    line = record.getMessage()
+    assert "60000000099" not in line
+    assert "/admin/customer360/search?q=REDACTED&x=1" in line
+
+
+def test_customer360_redaction_masks_phone_and_plate_and_leaves_other_paths():
+    redact = customer360_module.redact_customer360_query
+    assert redact("/admin/customer360/dms?phone=%2B6012&vehicle_no=VAB+1234&conversation_id=9") == (
+        "/admin/customer360/dms?phone=REDACTED&vehicle_no=REDACTED&conversation_id=9"
+    )
+    assert redact("/admin/customer360/dms?conversation_id=9") == (
+        "/admin/customer360/dms?conversation_id=9"
+    )
+    assert redact("/kb/search?q=hello") == "/kb/search?q=hello"

@@ -1,16 +1,16 @@
 From: Proton CRM <build@proton.local>
-Subject: [PATCH 0099] conversation panel: DMS / Vehicle card (not connected until the DMS is configured)
+Subject: [PATCH 0099] conversation panel: partner-system (DMS/TSP) card keyed by conversation (not connected until the DMS is configured)
 
 diff --git a/app/javascript/dashboard/components/proton/ProtonDmsCard.vue b/app/javascript/dashboard/components/proton/ProtonDmsCard.vue
 new file mode 100644
-index 0000000..bd86df0
+index 0000000..8bec2b7
 --- /dev/null
 +++ b/app/javascript/dashboard/components/proton/ProtonDmsCard.vue
-@@ -0,0 +1,210 @@
+@@ -0,0 +1,237 @@
 +<script setup>
-+// ProtonDmsCard.vue — OUR file (patch 0099). The "DMS / Vehicle" card in the
-+// conversation's right panel: the open conversation's customer as Proton's
-+// DMS/TSP knows them (vehicles + service history).
++// ProtonDmsCard.vue — OUR file (patch 0099). The partner-system ("DMS/TSP"
++// on automotive tenants) card in the conversation's right panel: the open
++// conversation's customer as the DMS knows them (assets + service history).
 +//
 +// No second DMS client: the backend's Customer 360 router owns the DMS path
 +// (customer360_router.py _build_dms_block, same permission, data scope and
@@ -18,16 +18,21 @@ index 0000000..bd86df0
 +//   - GET /admin/customer360/dms/status — fetched ONCE per page (module-level
 +//     promise, like useProtonPermissions), so while the integration is off
 +//     every conversation says "not connected" with no request of its own.
-+//   - GET /admin/customer360/dms?phone=&vehicle_no= — only when connected:
-+//     the DMS side-trip alone, none of the CRM fan-out /search does.
++//   - GET /admin/customer360/dms?conversation_id=N — only when connected.
++//     Keyed by the conversation, never by a phone or plate in the URL (R59):
++//     the backend reads the conversation itself, checks it is inside the
++//     caller's data scope, then asks the DMS (phone first, plate fallback).
 +//
 +// States: off (not connected) · loading · none (no record) · data · error.
 +// Every failure is a short message; the panel around it never breaks.
-+// Hidden for agents without customer360.view (the cached RBAC set — UX only,
-+// the backend's require_permission is the boundary).
++// Shown only where Customer 360 is: the tenant has the `customer360` feature
++// (0072/0074) and the agent holds customer360.view (the cached RBAC set — UX
++// only, the backend's require_permission is the boundary). Wording comes
++// from the tenant term dictionary (0075), as the Customer 360 page's does.
 +import { computed, ref, watch } from 'vue';
 +import { useMapGetter } from 'dashboard/composables/store';
 +import { useProtonPermissions } from 'dashboard/composables/useProtonPermissions';
++import { useCustomFeatures } from 'dashboard/composables/useCustomFeatures';
 +import { adminRequest } from 'dashboard/api/protonAdmin';
 +
 +const props = defineProps({
@@ -41,23 +46,33 @@ index 0000000..bd86df0
 +  },
 +});
 +
++const STATUS_TIMEOUT_MS = 10000;
 +const LOOKUP_TIMEOUT_MS = 15000;
 +
-+// Shared by every card on the page. A failure is NOT cached: the next
-+// conversation opened asks again instead of reading "off" forever.
++// Shared by every card on the page. A failure (or a timeout) is NOT cached:
++// the next conversation opened asks again instead of reading "off" forever.
 +let statusPromise = null;
 +function loadStatus() {
 +  if (!statusPromise) {
-+    statusPromise = adminRequest('/admin/customer360/dms/status').catch(e => {
-+      statusPromise = null;
-+      throw e;
-+    });
++    const controller = new AbortController();
++    const timer = setTimeout(() => controller.abort(), STATUS_TIMEOUT_MS);
++    statusPromise = adminRequest('/admin/customer360/dms/status', {
++      signal: controller.signal,
++    })
++      .catch(e => {
++        statusPromise = null;
++        throw e;
++      })
++      .finally(() => clearTimeout(timer));
 +  }
 +  return statusPromise;
 +}
 +
 +const { hasPermission } = useProtonPermissions();
-+const permitted = computed(() => hasPermission('customer360.view'));
++const { hasFeature, t } = useCustomFeatures();
++const permitted = computed(
++  () => hasFeature('customer360') && hasPermission('customer360.view')
++);
 +
 +const currentChat = useMapGetter('getSelectedChat');
 +
@@ -65,19 +80,21 @@ index 0000000..bd86df0
 +const dms = ref(null);
 +let requestToken = 0;
 +
-+const phone = computed(() => (props.contact?.phone_number || '').trim());
-+const plate = computed(() =>
-+  (
-+    props.contact?.custom_attributes?.vehicle_no ||
-+    currentChat.value?.custom_attributes?.vehicle_plate ||
-+    ''
-+  ).trim()
-+);
-+const lookupKey = computed(() =>
-+  permitted.value
-+    ? `${props.conversationId}|${phone.value}|${plate.value}`
-+    : ''
-+);
++const contactId = computed(() => props.contact?.id || null);
++// Only to notice that the customer's keys changed (the backend derives the
++// lookup itself from the conversation); none of this is sent.
++const lookupKey = computed(() => {
++  if (!permitted.value || !contactId.value) return '';
++  const contactAttrs = props.contact?.custom_attributes || {};
++  const convAttrs = currentChat.value?.custom_attributes || {};
++  return [
++    props.conversationId,
++    contactId.value,
++    props.contact?.phone_number || '',
++    contactAttrs.vehicle_no || '',
++    convAttrs.vehicle_plate || '',
++  ].join('|');
++});
 +
 +async function load() {
 +  if (!permitted.value) return;
@@ -98,23 +115,20 @@ index 0000000..bd86df0
 +    state.value = 'off';
 +    return;
 +  }
-+  if (!phone.value && !plate.value) {
-+    state.value = 'none';
-+    return;
-+  }
-+  const params = new URLSearchParams();
-+  if (phone.value) params.set('phone', phone.value);
-+  if (plate.value) params.set('vehicle_no', plate.value);
++  const params = new URLSearchParams({
++    conversation_id: String(props.conversationId),
++  });
 +  const controller = new AbortController();
 +  const timer = setTimeout(() => controller.abort(), LOOKUP_TIMEOUT_MS);
 +  try {
-+    const res = await adminRequest(`/admin/customer360/dms?${params.toString()}`, {
-+      signal: controller.signal,
-+    });
++    const res = await adminRequest(
++      `/admin/customer360/dms?${params.toString()}`,
++      { signal: controller.signal }
++    );
 +    if (token !== requestToken) return;
 +    const block = res?.dms;
 +    if (!block) {
-+      // Switched off since the status call.
++      // Switched off since the status call, or outside the caller's scope.
 +      state.value = 'off';
 +      return;
 +    }
@@ -146,23 +160,28 @@ index 0000000..bd86df0
 +watch(
 +  lookupKey,
 +  key => {
-+    if (key) load();
++    if (key) {
++      load();
++    } else {
++      // No contact yet (or no longer permitted): stay in loading, no request.
++      requestToken += 1;
++      state.value = 'loading';
++      dms.value = null;
++    }
 +  },
 +  { immediate: true }
 +);
 +</script>
 +
 +<template>
-+  <div
-+    v-if="permitted"
-+    class="px-2 pt-2"
-+    data-proton-dms-card
-+  >
++  <div v-if="permitted" class="px-2 pt-2" data-proton-dms-card>
 +    <div
 +      class="flex flex-col gap-2 p-3 border rounded-xl border-n-weak bg-n-alpha-1"
 +    >
 +      <div class="flex items-center justify-between gap-2">
-+        <div class="text-sm font-medium text-n-slate-12">DMS / Vehicle</div>
++        <div class="text-sm font-medium text-n-slate-12">
++          {{ t('partner_system') }} / {{ t('asset') }}
++        </div>
 +        <span
 +          v-if="state === 'off'"
 +          class="px-2 py-0.5 text-xs rounded-full bg-n-alpha-2 text-n-slate-11"
@@ -171,32 +190,40 @@ index 0000000..bd86df0
 +        </span>
 +      </div>
 +      <p v-if="state === 'off'" class="text-xs text-n-slate-11">
-+        DMS not connected — vehicle and service history will appear here once
-+        Proton's DMS is connected.
++        {{ t('partner_system') }} not connected — {{ t('asset', 'lower') }} and
++        service history will appear here once the {{ t('partner_system') }} is
++        connected.
 +      </p>
 +      <p v-else-if="state === 'loading'" class="text-xs text-n-slate-11">
-+        Loading DMS record…
++        Loading {{ t('partner_system') }} record…
 +      </p>
 +      <p v-else-if="state === 'none'" class="text-xs text-n-slate-11">
-+        No DMS/TSP record for this customer.
++        No {{ t('partner_system') }} record for this customer.
 +      </p>
 +      <p v-else-if="state === 'error'" class="text-xs text-n-ruby-11">
-+        Couldn't reach the DMS right now — try again later.
++        Couldn't reach the {{ t('partner_system') }} right now — try again
++        later.
 +      </p>
 +      <template v-else-if="state === 'data' && dms">
 +        <p
 +          v-if="dms.mock"
 +          class="px-2 py-1 text-xs font-medium border rounded-lg border-n-amber-6 bg-n-amber-2 text-n-amber-11"
 +        >
-+          Mock data — for demo purposes only, not from a live DMS.
++          Mock data — for demo purposes only, not from a live
++          {{ t('partner_system') }}.
 +        </p>
 +        <div class="text-xs text-n-slate-12">{{ dms.customer.name }}</div>
-+        <div class="text-xs font-medium text-n-slate-12">Vehicles</div>
++        <div class="text-xs font-medium text-n-slate-12">
++          {{ t('asset', 'plural') }}
++        </div>
 +        <p v-if="!dms.vehicles.length" class="text-xs text-n-slate-11">
-+          No vehicles on file.
++          No {{ t('asset', 'plural_lower') }} on file.
 +        </p>
 +        <ul v-else class="text-xs list-disc list-inside text-n-slate-11">
-+          <li v-for="vehicle in dms.vehicles" :key="vehicle.vehicle_no">
++          <li
++            v-for="(vehicle, index) in dms.vehicles"
++            :key="`${index}-${vehicle.vehicle_no}`"
++          >
 +            {{ vehicle.vehicle_no }} — {{ vehicle.model }}
 +            <template v-if="vehicle.purchased_from">
 +              (purchased from {{ vehicle.purchased_from }})
@@ -218,15 +245,15 @@ index 0000000..bd86df0
 +  </div>
 +</template>
 diff --git a/app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue b/app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue
-index e63f6d7..eca2b4f 100644
+index e63f6d7..d4c806b 100644
 --- a/app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue
 +++ b/app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue
 @@ -26,6 +26,9 @@ import LinearIssuesList from 'dashboard/components/widgets/conversation/linear/I
  import LinearSetupCTA from 'dashboard/components/widgets/conversation/linear/LinearSetupCTA.vue';
  // 0094 call recording: in-CRM player for archived call recordings.
  import ProtonCallRecordingPanel from 'dashboard/components/proton/ProtonCallRecordingPanel.vue';
-+// 0099 DMS card: the contact's DMS/TSP vehicles + service history, or
-+// "not connected" while the integration is off.
++// 0099 DMS card: the contact's partner-system (DMS/TSP) assets and service
++// history, or "not connected" while the integration is off.
 +import ProtonDmsCard from 'dashboard/components/proton/ProtonDmsCard.vue';
  
  const props = defineProps({
@@ -235,7 +262,7 @@ index e63f6d7..eca2b4f 100644
      <ContactInfo :contact="contact" :channel-type="channelType" />
      <!-- 0094: renders nothing unless this call has a playable recording -->
      <ProtonCallRecordingPanel :conversation-id="conversationId" />
-+    <!-- 0099: hidden without customer360.view -->
++    <!-- 0099: shown only with the customer360 feature + customer360.view -->
 +    <ProtonDmsCard :contact="contact" :conversation-id="conversationId" />
      <div class="px-2 pb-8 list-group">
        <Draggable

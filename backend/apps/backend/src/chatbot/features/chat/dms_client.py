@@ -77,7 +77,12 @@ class DmsClient(Protocol):
 
     async def find_customer(
         self, *, phone: str | None, vehicle_no: str | None
-    ) -> DmsCustomer | None: ...
+    ) -> DmsCustomer | None:
+        """Phone first, plate as fallback: callers pass ``phone`` whenever
+        they have one and ``vehicle_no`` only when there is no phone (the
+        conversation-panel DMS card, R59), so an adapter keys on whichever
+        is set. A /search query is one or the other, never both."""
+        ...
 
     async def list_vehicles(self, customer_ref: str) -> list[DmsVehicle]: ...
 

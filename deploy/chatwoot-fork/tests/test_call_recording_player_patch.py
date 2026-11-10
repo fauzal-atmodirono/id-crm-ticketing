@@ -53,9 +53,22 @@ def test_patch_is_additions_only():
     assert removed == []
 
 
+def _file_diff(patch_text: str, path: str) -> str:
+    """Just the diff section of `patch_text` that edits `path`."""
+    out, cur = [], None
+    for line in patch_text.splitlines():
+        if line.startswith("diff --git "):
+            cur = line.split(" b/", 1)[1]
+        if cur == path:
+            out.append(line)
+    return "\n".join(out)
+
+
 def test_no_earlier_patch_touches_the_files_0094_edits():
     """ContactPanel.vue is upstream-only before 0094, so its context lines
-    are upstream's; a later patch editing it must keep 0094's lines intact."""
+    are upstream's. A later patch (0099's DMS card) may add to it, but its
+    ContactPanel.vue diff must remove nothing, so 0094's lines stay intact.
+    The panel and composable stay 0094's alone."""
     for p in PATCHES:
         if p == P0094:
             continue
@@ -64,11 +77,10 @@ def test_no_earlier_patch_touches_the_files_0094_edits():
         assert f"b/{COMPOSABLE}" not in text, p.name
         if p.name < P0094.name:
             assert f"b/{CONTACT_PANEL}" not in text, p.name
-        elif f"b/{CONTACT_PANEL}" in text:
-            # A later patch (0099's DMS card) may add to ContactPanel.vue,
-            # but only add: 0094's lines must survive untouched.
+        else:
             assert not [
-                line for line in text.splitlines()
+                line
+                for line in _file_diff(text, CONTACT_PANEL).splitlines()
                 if line.startswith("-") and not line.startswith("---")
             ], p.name
 

@@ -52,11 +52,12 @@ collapse into the same shape.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 
 from chatbot.features.authz.data_scope import (
     Scope,
@@ -292,6 +293,101 @@ def _unreachable_dms_block(*, mock: bool) -> dict[str, Any]:
     }
 
 
+def _scope_dms_block(block: dict[str, Any] | None, scope: Scope) -> dict[str, Any] | None:
+    """R59: DMS vehicles and service records are narrowed by the caller's
+    data scope the way RSA incidents are -- their dealer (`purchased_from` /
+    `dealer`) is their only dimension, so under an inbox/team/department
+    scope they are hidden (data_scope.py rule 5). The DMS customer itself
+    stays, like the Chatwoot contact does."""
+    if not block or scope.unrestricted:
+        return block
+    return {
+        **block,
+        "vehicles": apply_scope(
+            block.get("vehicles") or [], scope,
+            lambda v: {"dealer_slugs": v.get("purchased_from")},
+        ),
+        "service_history": apply_scope(
+            block.get("service_history") or [], scope,
+            lambda r: {"dealer_slugs": r.get("dealer")},
+        ),
+    }
+
+
+async def _dms_connection(
+    dms_config_store: DmsConfigStore | None, dms_client: DmsClient | None
+) -> tuple[bool, bool]:
+    """(connected, mock). Connected only when the stored config is enabled
+    AND a client is wired -- enabled-but-unwired reads as "not connected",
+    the rule _build_dms_block follows too. Never raises."""
+    if dms_config_store is None or dms_client is None:
+        return False, False
+    try:
+        config = await dms_config_store.get()
+    except Exception as exc:
+        _log.warning("dms_customer360_status_failed", error_type=type(exc).__name__)
+        return False, False
+    if config is None or not config.enabled:
+        return False, False
+    return True, isinstance(dms_client, MockDmsClient)
+
+
+def _card_lookup_keys(conv: dict[str, Any]) -> tuple[str | None, str | None]:
+    """(phone, vehicle_no) for the DMS card: phone first, the plate only as a
+    fallback when the contact has no phone (DmsClient.find_customer). The
+    plate is the contact's ``vehicle_no``, else the case's ``vehicle_plate``."""
+    sender = (conv.get("meta") or {}).get("sender")
+    sender = sender if isinstance(sender, dict) else {}
+    phone = str(sender.get("phone_number") or "").strip() or None
+    if phone:
+        return phone, None
+    plate = (sender.get("custom_attributes") or {}).get("vehicle_no") or (
+        conv.get("custom_attributes") or {}
+    ).get("vehicle_plate")
+    return None, (str(plate or "").strip() or None)
+
+
+def _empty_dms_block(*, mock: bool) -> dict[str, Any]:
+    return {"status": "ok", "mock": mock, "customer": None, "vehicles": [], "service_history": []}
+
+
+# --- R60: no phone / plate / search text in the access log -------------------
+
+_C360_QUERY = re.compile(r"(/admin/customer360/[^\s\"?]*\?)([^\s\"]*)")
+_C360_SECRET_PARAM = re.compile(r"(^|&)(phone|vehicle_no|q)=[^&]*")
+
+
+def redact_customer360_query(text: str) -> str:
+    """Replace the ``phone``, ``vehicle_no`` and ``q`` values in any
+    /admin/customer360/ URL inside ``text`` with REDACTED."""
+    return _C360_QUERY.sub(
+        lambda m: m.group(1) + _C360_SECRET_PARAM.sub(r"\1\2=REDACTED", m.group(2)), text
+    )
+
+
+class Customer360QueryRedactor(logging.Filter):
+    """Rewrites a log record's message and string args (uvicorn's access
+    record carries the path in its args) -- same shape as the call-recording
+    token redactor in phone/recording_router.py."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = redact_customer360_query(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                redact_customer360_query(a) if isinstance(a, str) else a for a in record.args
+            )
+        return True
+
+
+def install_customer360_access_log_redaction() -> None:
+    """Idempotent. On the `uvicorn.access` LOGGER (not a handler), which
+    survives uvicorn's dictConfig."""
+    logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, Customer360QueryRedactor) for f in logger.filters):
+        logger.addFilter(Customer360QueryRedactor())
+
+
 async def _fetch_dms_records(
     client: DmsClient, *, phone: str | None, vehicle_no: str | None
 ) -> tuple[DmsCustomer | None, list[DmsVehicle], list[DmsServiceRecord]]:
@@ -478,6 +574,7 @@ def build_customer360_router(
     dms_client: DmsClient | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/admin/customer360", tags=["customer360"])
+    install_customer360_access_log_redaction()
     view_360 = require_permission(
         "customer360.view", repo=authz_repo, validator=validator, settings=settings
     )
@@ -608,7 +705,7 @@ def build_customer360_router(
             "conversations": conversations,
             "rsa_incidents": rsa_incidents,
         }
-        dms_block = await dms_task
+        dms_block = _scope_dms_block(await dms_task, scope)
         if dms_block is not None:
             result["dms"] = dms_block
         return pii.apply(result)
@@ -622,38 +719,39 @@ def build_customer360_router(
     # fan-out /search does.
     @router.get("/dms/status", dependencies=[Depends(view_360)])
     async def dms_status() -> dict[str, Any]:
-        """``connected`` only when the stored config is enabled AND a client
-        is wired -- enabled-but-unwired must read as "not connected", the
-        same rule _build_dms_block follows. Never raises."""
-        if dms_config_store is None or dms_client is None:
-            return {"connected": False, "mock": False}
-        try:
-            config = await dms_config_store.get()
-        except Exception as exc:
-            _log.warning("dms_customer360_status_failed", error_type=type(exc).__name__)
-            return {"connected": False, "mock": False}
-        if config is None or not config.enabled:
-            return {"connected": False, "mock": False}
-        return {"connected": True, "mock": isinstance(dms_client, MockDmsClient)}
+        connected, mock = await _dms_connection(dms_config_store, dms_client)
+        return {"connected": connected, "mock": mock}
 
     @router.get("/dms", dependencies=[Depends(view_360)])
     async def dms_lookup(
-        phone: str | None = Query(default=None, max_length=32),
-        vehicle_no: str | None = Query(default=None, max_length=32),
+        conversation_id: str = Query(pattern=r"^\d{1,12}$"),
         scope: Scope = Depends(data_scope),
         pii: PiiPolicy = Depends(pii_policy),
     ) -> dict[str, Any]:
-        """``{"dms": block}`` for one customer; ``block`` is ``None`` when the
-        integration is off (the shape /search omits the key for)."""
-        phone = (phone or "").strip() or None
-        vehicle_no = (vehicle_no or "").strip() or None
-        if phone is None and vehicle_no is None:
-            raise HTTPException(status_code=422, detail="phone or vehicle_no is required")
+        """``{"dms": block}`` for the customer of ONE conversation the caller
+        may see (R59): keyed by conversation id, never by a phone or plate in
+        the URL. ``block`` is ``None`` when the integration is off, the
+        conversation is gone, or it lies outside the caller's data scope --
+        indistinguishable on purpose."""
         if scope.deny_all:
             return {"dms": None}
-        block = await _build_dms_block(
-            dms_config_store, dms_client, phone=phone, vehicle_no=vehicle_no
-        )
-        return pii.apply({"dms": block})
+        connected, mock = await _dms_connection(dms_config_store, dms_client)
+        if not connected:
+            return {"dms": None}
+        try:
+            conv = await chatwoot.get_conversation(conversation_id)
+        except Exception as exc:
+            _log.warning("customer360_dms_conversation_failed", error_type=type(exc).__name__)
+            conv = None
+        if not isinstance(conv, dict) or not apply_scope([conv], scope, conversation_dimensions):
+            return {"dms": None}
+        phone, vehicle_no = _card_lookup_keys(conv)
+        if phone is None and vehicle_no is None:
+            block: dict[str, Any] | None = _empty_dms_block(mock=mock)
+        else:
+            block = await _build_dms_block(
+                dms_config_store, dms_client, phone=phone, vehicle_no=vehicle_no
+            )
+        return pii.apply({"dms": _scope_dms_block(block, scope)})
 
     return router

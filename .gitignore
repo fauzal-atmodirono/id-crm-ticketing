@@ -17,3 +17,6 @@ __pycache__/
 .phase1-venv/
 .pytest_cache/
 .DS_Store
+
+# Local secrets (never commit)
+test-console-password.txt

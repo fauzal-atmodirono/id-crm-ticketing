@@ -46,6 +46,7 @@ from chatbot.features.chat.phone.caller_context import (
     CallerContext,
     build_caller_instruction,
     build_language_instruction,
+    is_recognised,
     mask,
     normalise_mobile,
     parse_number_list,
@@ -102,6 +103,18 @@ if TYPE_CHECKING:
 
 _log = structlog.get_logger(__name__)
 
+# R49: session ids only server-side code creates (see _guard_session).
+SERVER_OWNED_SESSION_PREFIXES = (
+    "whatsapp-",
+    "crm-",
+    "email-",
+    "phone-",
+    "zendesk-",
+    "chatwoot-conv-",
+    "sum-",
+    "audit-",
+)
+
 # FIX-15: cap on the dial-status hold/transfer session lookup (fail open).
 _HOLD_HOOK_TIMEOUT_SECONDS = 3.0
 
@@ -116,6 +129,10 @@ class ChatTurnRequest(BaseModel):
     image_mime_type: str | None = None
     video_base64: str | None = None
     video_mime_type: str | None = None
+    # Test-console persona number (brief 6). Only honoured by the service
+    # with CHAT_TURN_CALLER_CONTEXT_ENABLED + PHONE_WEB_CALL_AS_ENABLED and a
+    # number on PHONE_WEB_CALL_AS_NUMBERS; anything else is ignored.
+    persona_phone: str | None = None
 
 
 class CsatRequest(BaseModel):
@@ -418,6 +435,25 @@ _GREETING_PROMPT = (
     "short sentence as Proton's phone assistant and ask how you can help, following "
     "the LANGUAGE and CALL FLOW rules. Do not mention this note.)"
 )
+# R47 (brief 6): for a RECOGNISED caller the generic cue above won live --
+# the model greeted anonymously and never used the name. This one points at
+# the CALL FLOW rules instead. The name itself stays in the system
+# instruction; the cue carries none.
+_GREETING_PROMPT_RECOGNISED = (
+    "(The call has just connected and the caller is listening. Greet them now in one "
+    "short sentence as Proton's phone assistant, exactly as the CALL FLOW rules say for "
+    "a recognised caller: by their first name, mentioning their car model where "
+    "natural, then ask how you can help. Follow the LANGUAGE rules. Do not mention "
+    "this note.)"
+)
+
+
+def _greeting_prompt_for(caller_ctx: CallerContext | None, *, caller_on: bool) -> str:
+    """The fast-start greeting cue; the old one unless the caller is
+    recognised (flag off / unknown / shared number: byte-identical)."""
+    if caller_on and is_recognised(caller_ctx):
+        return _GREETING_PROMPT_RECOGNISED
+    return _GREETING_PROMPT
 
 
 def _ms(seconds: float) -> int:
@@ -942,7 +978,9 @@ class ChatRouter:
             await self.orchestrator.forward_whatsapp_to_agent(session_id, body)
             return Response(status_code=200)
 
-        result = await self.orchestrator.handle_turn(session_id=session_id, text=body)
+        result = await self.orchestrator.handle_turn(
+            session_id=session_id, text=body, **self._whatsapp_caller(e164)
+        )
 
         if await self.orchestrator.needs_whatsapp_handoff(session_id):
             summary = result.reply or "Customer requested a human agent."
@@ -961,6 +999,18 @@ class ChatRouter:
         )
         return Response(status_code=200)
 
+    def _whatsapp_caller(self, e164: str) -> dict[str, Any]:
+        """The sender's number for the turn's caller context (brief 6). Only
+        from this Twilio-signed webhook -- never derived from a session id,
+        which /chat/turn lets the browser choose. Flag off -> no kwarg, the
+        call is exactly as before."""
+        settings = self.orchestrator._settings
+        # M-5: no Twilio token = the webhook verified no signature, so the
+        # From number proves nothing.
+        if not settings.chat_turn_caller_context_enabled or not e164 or not settings.twilio_auth_token:
+            return {}
+        return {"customer_phone": e164}
+
     async def _attribute_nps_agent(self, ticket_id: str) -> None:
         """Best-effort: stamp the agent assigned to `ticket_id` AT THIS
         MOMENT as the NPS attribution tag (P8 task 5). Called once, at the
@@ -975,7 +1025,11 @@ class ChatRouter:
         """Second invalid survey reply: stop trapping the customer, resume
         normal AI handling of this message."""
         await self.orchestrator.resume_ai(session_id)
-        result = await self.orchestrator.handle_turn(session_id=session_id, text=body)
+        result = await self.orchestrator.handle_turn(
+            session_id=session_id,
+            text=body,
+            **self._whatsapp_caller(from_addr.replace("whatsapp:", "")),
+        )
         await self._send_whatsapp_reply(from_addr, result)
         await self.orchestrator.capture_conversation(session_id, channel="WhatsApp")
 
@@ -1457,8 +1511,34 @@ class ChatRouter:
 
     # --- Frontend-facing API (consumed by the Vue app) ----------------------
 
-    async def chat_turn(self, req: ChatTurnRequest) -> ChatTurnResponse:
+    def _guard_session(self, session_id: str, x_api_key: str | None) -> None:
+        """R49/R53: /chat/turn, /voice/turn, /chat/stream, /chat/csat and
+        /chat/nps are reachable from the browser, and
+        the browser chooses ``session_id``. A server-owned id (a WhatsApp
+        sender's, an agent-service crm- conversation, a phone call, ...)
+        would let it read or steer that session -- including its cached
+        customer paragraph. Such ids need the backend service credential the
+        agent's ProtonConfigClient already sends (x-api-key ==
+        PROTON_BACKEND_KEY, constant-time; blank key fails closed). In-process
+        channel code (Twilio WhatsApp webhook, phone bridge) never passes
+        through here."""
+        if not session_id.strip().lower().startswith(SERVER_OWNED_SESSION_PREFIXES):
+            return
+        key = self.orchestrator._settings.proton_backend_key
+        if (
+            key
+            and x_api_key
+            and hmac.compare_digest(x_api_key.encode("utf-8"), key.encode("utf-8"))
+        ):
+            return
+        _log.warning("chat_turn_server_owned_session_refused", session_prefix=session_id[:9])
+        raise HTTPException(status_code=403, detail="Forbidden session id")
+
+    async def chat_turn(
+        self, req: ChatTurnRequest, x_api_key: str | None = Header(default=None)
+    ) -> ChatTurnResponse:
         """Run a single text chat turn and return the assistant's reply."""
+        self._guard_session(req.session_id, x_api_key)
         _log.info("chat_turn_received", session_id=req.session_id, text_length=len(req.text))
         result = await self.orchestrator.handle_turn(
             session_id=req.session_id,
@@ -1470,6 +1550,7 @@ class ChatRouter:
             image_mime_type=req.image_mime_type,
             video_base64=req.video_base64,
             video_mime_type=req.video_mime_type,
+            **({"persona_phone": req.persona_phone} if req.persona_phone else {}),
         )
         return ChatTurnResponse(
             reply=result.reply,
@@ -1480,28 +1561,40 @@ class ChatRouter:
             products=_products_list(result),
         )
 
-    async def chat_csat(self, payload: CsatRequest) -> dict[str, str]:
+    async def chat_csat(
+        self, payload: CsatRequest, x_api_key: str | None = Header(default=None)
+    ) -> dict[str, str]:
+        self._guard_session(payload.session_id, x_api_key)  # R53
         await self.orchestrator.record_csat(payload.session_id, payload.score, channel="web")
         return {
             "status": "ok",
             "message": "Thank you for your feedback!",
         }
 
-    async def chat_nps(self, payload: NpsRequest) -> dict[str, str]:
+    async def chat_nps(
+        self, payload: NpsRequest, x_api_key: str | None = Header(default=None)
+    ) -> dict[str, str]:
+        self._guard_session(payload.session_id, x_api_key)  # R53
         await self.orchestrator.record_nps(payload.session_id, payload.score, channel="web")
         return {
             "status": "ok",
             "message": "Thank you for your feedback!",
         }
 
-    async def chat_stream(self, session_id: str) -> StreamingResponse:
+    async def chat_stream(
+        self, session_id: str, x_api_key: str | None = Header(default=None)
+    ) -> StreamingResponse:
         """SSE stream of human-agent messages for a handed-off session.
 
         Emits one event per agent message. A 30-second heartbeat keeps the
         connection alive through HTTP proxies. The stream terminates when the
         session is unregistered (e.g. `New session` clicked) or when the
         client disconnects.
+
+        R53: a server-owned session id (a WhatsApp customer's agent replies)
+        needs the backend key, as for /chat/turn.
         """
+        self._guard_session(session_id, x_api_key)
         if self._handoff_bridge is None:
             raise HTTPException(status_code=503, detail="Live chat bridge disabled")
 
@@ -1551,8 +1644,14 @@ class ChatRouter:
         self,
         session_id: str = Form(...),
         audio: UploadFile = File(...),  # noqa: B008  (FastAPI file injection)
+        persona_phone: str | None = Form(default=None),
+        x_api_key: str | None = Header(default=None),
     ) -> Response:
-        """Run a single voice turn. Returns MP3 audio with X-Reply-Text + X-Handoff-* headers."""
+        """Run a single voice turn. Returns MP3 audio with X-Reply-Text + X-Handoff-* headers.
+
+        ``persona_phone``: the test console's persona (brief 6), allowlisted
+        by the service exactly as for /chat/turn."""
+        self._guard_session(session_id, x_api_key)
         audio_bytes = await audio.read()
         mime_type = audio.content_type or "audio/ogg"
         _log.info(
@@ -1566,6 +1665,7 @@ class ChatRouter:
             session_id=session_id,
             audio_bytes=audio_bytes,
             audio_mime_type=mime_type,
+            **({"persona_phone": persona_phone} if persona_phone else {}),
         )
 
         headers: dict[str, str] = {}
@@ -2036,7 +2136,11 @@ class ChatRouter:
                     announcement_sent_at=notice_sent_at,
                     timing=timing,
                     stream_started_at=stream_started_at,
-                    greeting_prompt=_GREETING_PROMPT if settings.phone_fast_start_enabled else None,
+                    greeting_prompt=(
+                        _greeting_prompt_for(caller_ctx, caller_on=caller_on)
+                        if settings.phone_fast_start_enabled
+                        else None
+                    ),
                 )
                 if notice_requested and notice_seconds is None:
                     # Asked to play the notice over the stream but had no

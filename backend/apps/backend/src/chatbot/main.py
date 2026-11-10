@@ -687,6 +687,22 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
             chatwoot_client, settings, dealer_source=_note_dealer_slugs
         )
 
+    # Brief 6 (2026-11-09): /chat/turn + /voice/turn caller context. The
+    # phone path's bounded, fail-open lookup, read-only here; built only with
+    # the flag on and a Chatwoot adapter, None leaves every turn as before.
+    _turn_caller_lookup = None
+    if settings.chat_turn_caller_context_enabled and chatwoot_client is not None:
+        from chatbot.features.chat.phone.caller_context import (  # noqa: PLC0415
+            SOURCE_CALLER_ID,
+            CallerContext,
+            CallerContextService,
+        )
+
+        _turn_ctx_service = CallerContextService(chatwoot_client, settings)
+
+        async def _turn_caller_lookup(phone: str) -> CallerContext:
+            return await _turn_ctx_service.lookup(phone, SOURCE_CALLER_ID)
+
     orchestrator = OrchestratorService(
         settings=settings,
         chat_port=chat_port,
@@ -701,6 +717,7 @@ def bootstrap_application() -> FastAPI:  # noqa: PLR0912, PLR0915
         assistants_store=_shared_assistants_store,
         tenant_settings_store=_shared_tenant_settings_store,
         handoff_note_service=_handoff_note_service,
+        caller_context_lookup=_turn_caller_lookup,
     )
 
     # --- P6: after-call work, built before the chat router that consumes it ---

@@ -748,6 +748,35 @@ class ChatwootAdapter(ChatPort, TicketingPort, ConversationLogPort, HumanAgentBr
         payload = (res or {}).get("payload") if isinstance(res, dict) else None
         return [c for c in (payload or []) if isinstance(c, dict)]
 
+    async def find_conversations_by_vehicle_plate(
+        self, variants: list[str]
+    ) -> list[dict[str, Any]]:
+        """Conversations whose ``vehicle_plate`` custom attribute contains any
+        variant (Customer 360 C360-002: a plate captured on a case but never
+        copied onto the contact). One ``POST /conversations/filter`` call;
+        ``case_fields`` stores the plate compact upper-case, callers also pass
+        spaced spellings for plates typed by hand. First page only. Each row
+        carries ``meta.sender`` -- the contact. Fails open to ``[]`` (e.g. a
+        tenant without the ``vehicle_plate`` attribute definition, which
+        Chatwoot answers with a 4xx).
+        """
+        wanted = [v for v in dict.fromkeys(variants) if v]
+        if not wanted:
+            return []
+        body = {
+            "payload": [
+                {
+                    "attribute_key": "vehicle_plate",
+                    "filter_operator": "contains",
+                    "values": [v],
+                    "query_operator": "OR" if i < len(wanted) - 1 else None,
+                }
+                for i, v in enumerate(wanted)
+            ]
+        }
+        res = await self._request("POST", "/conversations/filter", body)
+        return _conversations_from(res)
+
     async def list_conversations(self, *, max_pages: int = 5) -> list[dict[str, Any]]:
         """Page the account conversations endpoint, filtered to our inbox.
 

@@ -29,9 +29,11 @@ What lives here, and why each piece is shaped the way it is:
   back to "ask the caller". It never raises.
 * **PDPA-shaped model view** (``caller_view``/``build_caller_instruction``):
   the model gets a first name, car models, the last four characters of a
-  plate, a dealer display name and an open-case count -- never the phone
-  number, the full name or the full plate. It is told to CONFIRM ("am I
-  speaking with Ahmad? is this about your X50?"), never to recite.
+  plate and a dealer display name -- never the phone number, the full name
+  or the full plate. Since R47 (brief 6) a recognised caller is greeted by
+  first name with the car where natural and never asked for what we already
+  have; the wording lives in ``features/contact_context/personal.py``, shared
+  with the chat channels.
 * **Saving what the caller says** (``CallerContextService.save``): conversation
   custom attributes (``caller_name``, ``vehicle_plate`` -- the case field
   duplicate detection reads --, ``vehicle_model``, ``caller_dealer_text``,
@@ -59,6 +61,12 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from chatbot.features.chat.customer360_router import _phones_match, _plate_key
+from chatbot.features.contact_context.personal import (
+    PRIVACY_FLOOR,
+    recognised_paragraph,
+    shared_paragraph,
+    unknown_paragraph,
+)
 from chatbot.features.privacy.pii import mask_phone_value
 
 if TYPE_CHECKING:
@@ -436,6 +444,10 @@ class CallerContext:
     # persona's for a web call-as call, else the single matched contact's
     # stored one. "" = unknown.
     language: str = ""
+    # The lookup itself failed (Chatwoot error, or the deadline passed with
+    # nothing found): "we do not know", not "a new customer". The phone path
+    # treats both the same (ask the caller); /chat/turn adds nothing.
+    failed: bool = False
 
     @property
     def start_language(self) -> str:
@@ -549,25 +561,19 @@ def _car_phrase(v: CallerVehicle) -> str:
 
 
 _FLOW = (
-    "CALL FLOW: there is no menu -- the caller talks to you directly. Greet, identify "
-    "the caller, help them (use kb_search), and hand off only when needed. "
+    "CALL FLOW: there is no menu -- the caller talks to you directly. Greet them as "
+    "the rules below say (never ask a recognised caller who they are), help them (use "
+    "kb_search), and hand off only when needed. "
     "SAFETY FIRST: if the caller reports a breakdown, an accident, smoke, a warning "
     "light while driving, or being stranded on a road, FIRST make sure they are safe "
     "(hazard lights on, move away from traffic only if it is safe, call 999 if anyone "
     "is hurt) and help or hand off straight away; collect details only afterwards and "
     "never delay help to ask for them. "
-    "PRIVACY: never read out a phone number, a full plate number, an address or any "
-    "other personal detail from our records. You may confirm what the caller tells "
-    "you, and you may ask a confirming question using only a first name and a car "
-    "model. "
 )
 
-_UNKNOWN = (
-    "This caller is not in our records yet. Naturally, ONE question at a time, and at "
-    "most three questions before you start helping, ask for: their name, their car "
-    "registration number, and which Proton dealer or service centre they use (or the "
-    "nearest one). If they decline or are in a hurry, help them anyway. "
-)
+# R47 (2026-11-09): one wording source for every channel -- see
+# features/contact_context/personal.py.
+_UNKNOWN = unknown_paragraph(channel="call")
 
 _SAVE = (
     "Whenever the caller tells you their name, car registration number, car model or "
@@ -577,56 +583,21 @@ _SAVE = (
 
 
 def _known_instruction(ctx: CallerContext) -> str:
-    if len(ctx.candidates) > 1:
-        names = ", ".join(c.first_name for c in ctx.candidates if c.first_name) or "unnamed"
-        return (
-            "This phone number is shared by several customers in our records (first "
-            f"names: {names}). Do not guess and do NOT list these names: ask the caller "
-            "for their name, and if it matches one of them treat the caller as that "
-            "customer, then confirm which car the call is about. If it matches none, "
-            "treat them as a new caller. "
-        )
-    c = ctx.candidates[0]
-    parts = []
-    if c.first_name:
-        parts.append(f"first name {c.first_name}")
-    cars = [v for v in c.vehicles if v.model or v.plate]
-    if len(cars) == 1:
-        parts.append(f"car {_car_phrase(cars[0])}")
-    elif len(cars) > 1:
-        parts.append("cars on file: " + "; ".join(_car_phrase(v) for v in cars))
-    if c.last_dealer:
-        parts.append(f"usual dealer {dealer_display(c.last_dealer)}")
-    # No open-case count (ruling 9 Nov): the model has no business telling a
-    # caller what is on file before an agent has looked at it.
-    facts = ", ".join(parts) or "no details on file"
-    if c.first_name and len(cars) == 1 and cars[0].model:
-        confirm = (
-            "In your first reply, after the greeting, confirm identity and car in ONE "
-            f"sentence, e.g. 'Am I speaking with {c.first_name}? Is this about your "
-            f"{cars[0].model}?'. "
-        )
-    elif c.first_name:
-        confirm = (
-            f"In your first reply confirm identity in ONE sentence ('Am I speaking with "
-            f"{c.first_name}?'). "
-        )
-    else:
-        confirm = "Ask the caller's name, then confirm the car. "
-    which = (
-        "They have more than one car on file: ask which car the call is about (you may "
-        "mention the models, never the plates). "
-        if len(cars) > 1
-        else ""
-    )
-    if not cars:
-        which = "Ask for their car registration number and model if it matters. "
-    return (
-        f"This caller's phone number matches a customer in our records: {facts}. "
-        + confirm
-        + which
-        + "If the caller says this is not them, treat them as a new caller. "
-    )
+    """Recognised (R47: personal from the first sentence) or shared number.
+    Built from ``caller_view`` -- no open-case count (ruling 9 Nov: the model
+    has no business telling a caller what is on file before an agent has
+    looked at it), no phone, surname or full plate."""
+    view = caller_view(ctx)
+    customers = view["customers"]
+    if len(customers) > 1:
+        return shared_paragraph([c["first_name"] for c in customers], channel="call")
+    return recognised_paragraph(customers[0], channel="call")
+
+
+def is_recognised(ctx: CallerContext | None) -> bool:
+    """Exactly one record on the number, with a first name to greet by."""
+    single = ctx.single if ctx is not None else None
+    return single is not None and bool(single.first_name)
 
 
 def build_caller_instruction(ctx: CallerContext | None, *, lookup_tool: bool) -> str:
@@ -647,7 +618,9 @@ def build_caller_instruction(ctx: CallerContext | None, *, lookup_tool: bool) ->
         who = _known_instruction(ctx)
     else:
         who = _UNKNOWN
-    return _FLOW + who + _SAVE
+    # The privacy floor exactly once: a recognised paragraph carries it.
+    privacy = "" if PRIVACY_FLOOR in who else PRIVACY_FLOOR
+    return _FLOW + privacy + who + _SAVE
 
 
 _LANGUAGE_NAMES = {
@@ -724,7 +697,8 @@ def spoken_match_guidance(c: CallerCandidate) -> str:
         car = (
             "They have more than one car on file ("
             + "; ".join(_car_phrase(v) for v in cars)
-            + "): ask which car the call is about (models only, never plates). "
+            + "): ask which car the call is about (name the models, or the plate ending if "
+            "two models are the same). "
         )
     else:
         car = "Ask for their car registration number and model if it matters. "
@@ -940,24 +914,28 @@ class CallerContextService:
         contacts: list[dict[str, Any]] = []
         convs: dict[int, list[dict[str, Any]]] = {}
         timeout = self._settings.phone_caller_lookup_timeout_seconds
+        failed = False
         try:
             await asyncio.wait_for(self._fill(phone, contacts, convs), timeout=timeout)
         except TimeoutError:
             _log.warning("phone_caller_lookup_timed_out", phone=mask(phone), found=len(contacts))
+            failed = not contacts
         except Exception as e:
             _log.warning(
                 "phone_caller_lookup_failed", phone=mask(phone), error_type=type(e).__name__
             )
             contacts = []
+            failed = True
         try:
             cands = [_candidate(c, convs.get(int(c["id"]), [])) for c in contacts]
         except Exception as e:
             _log.warning("phone_caller_lookup_parse_failed", error_type=type(e).__name__)
             cands = []
+            failed = True
         _log.info(
             "phone_caller_lookup_done", phone=mask(phone), source=source, candidates=len(cands)
         )
-        return CallerContext(phone=phone, source=source, candidates=cands)
+        return CallerContext(phone=phone, source=source, candidates=cands, failed=failed)
 
     async def save(
         self,

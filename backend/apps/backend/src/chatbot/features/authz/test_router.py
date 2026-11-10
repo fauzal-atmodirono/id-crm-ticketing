@@ -617,3 +617,67 @@ async def test_revoke_last_native_key_deletes_mirror_and_clears_agent(mirror_cli
     assert res.status_code == 200
     assert await repo.get_native_role_mirror(5) is None
     assert (5, None) in mirror.agent_calls
+
+
+# --- platform superadmin sees what require_permission lets it do (R55) ---------
+
+
+async def _superadmin_client(tmp_path, respx_mock, *, rbac_enabled=True):
+    """User 1 (platform owner floor) and user 9 (Chatwoot SuperAdmin type)
+    hold NO roles here; user 2 is an ordinary agent."""
+    settings = get_settings().model_copy(update={"rbac_enabled": rbac_enabled})
+    engine = build_engine(f"sqlite+aiosqlite:///{tmp_path}/super_test.db")
+    await init_authz_db(engine)
+    repo = AuthzRepository(build_session_maker(engine))
+    await seed_defaults(repo)
+    await repo.assign_role(chatwoot_user_id=2, role_id="agent")
+    profiles = {
+        "owner-tok": {"id": 1},
+        "super-tok": {"id": 9, "type": "SuperAdmin"},
+        "agent-tok": {"id": 2, "type": None},
+    }
+    respx_mock.get(f"{settings.chatwoot_api_url}/api/v1/profile").mock(
+        side_effect=lambda request: httpx.Response(
+            200, json=profiles[request.headers["access-token"]]
+        )
+    )
+    app = FastAPI()
+    app.include_router(build_authz_router(repo, TokenValidator(settings), settings))
+    return TestClient(app)
+
+
+def _as(token: str) -> dict:
+    return {"x-chatwoot-access-token": token, "x-chatwoot-client": "c", "x-chatwoot-uid": "u"}
+
+
+@pytest.mark.parametrize("token", ["owner-tok", "super-tok"])
+async def test_a_platform_superadmin_without_roles_gets_every_permission(
+    tmp_path, respx_mock, token
+):
+    from chatbot.features.authz.seed import PERMISSION_REGISTRY
+
+    client = await _superadmin_client(tmp_path, respx_mock)
+    perms = client.get("/authz/permissions", headers=_as(token)).json()["permissions"]
+    assert perms == sorted(PERMISSION_REGISTRY)
+    assert "call_recording.listen" in perms
+    # native Chatwoot mirror keys are role-mirror plumbing, not RBAC grants
+    assert not [p for p in perms if p.startswith("chatwoot.")]
+    check = client.get(
+        "/authz/check", params={"permission": "call_recording.listen"}, headers=_as(token)
+    )
+    assert check.json() == {"allowed": True}
+
+
+async def test_an_ordinary_agent_is_unchanged(tmp_path, respx_mock):
+    client = await _superadmin_client(tmp_path, respx_mock)
+    perms = client.get("/authz/permissions", headers=_as("agent-tok")).json()["permissions"]
+    assert "call_recording.listen" not in perms and "cases.view" in perms
+    check = client.get(
+        "/authz/check", params={"permission": "call_recording.listen"}, headers=_as("agent-tok")
+    )
+    assert check.json() == {"allowed": False}
+
+
+async def test_with_rbac_off_a_superadmin_gets_only_their_roles_as_before(tmp_path, respx_mock):
+    client = await _superadmin_client(tmp_path, respx_mock, rbac_enabled=False)
+    assert client.get("/authz/permissions", headers=_as("owner-tok")).json() == {"permissions": []}

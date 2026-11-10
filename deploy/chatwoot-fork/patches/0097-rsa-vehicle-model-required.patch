@@ -1,0 +1,111 @@
+From: Proton CRM <build@proton.local>
+Subject: [PATCH 0097] rsa incident log: vehicle model is required (label, input, named client-side check)
+
+diff --git a/app/javascript/dashboard/views/ProtonRsaPage.vue b/app/javascript/dashboard/views/ProtonRsaPage.vue
+index d63f85c..f23e982 100644
+--- a/app/javascript/dashboard/views/ProtonRsaPage.vue
++++ b/app/javascript/dashboard/views/ProtonRsaPage.vue
+@@ -59,12 +59,30 @@ export default {
+       loading: true,
+       errored: false,
+       saving: false,
++      // RSA-001: the field the last create/edit attempt was missing, named
++      // in the operator's own term ("Vehicle model is required.").
++      formError: '',
++      // Same check for the inline-edit row, shown in that row.
++      editError: '',
+     };
+   },
+   async mounted() {
+     await this.load();
+   },
+   methods: {
++    // RSA-001: Vehicle model is required (the backend answers 422
++    // "vehicle_model is required" too). `required` on the input stops an
++    // empty submit; this also catches whitespace and the inline edit row,
++    // and names the field before anything is sent.
++    missingVehicleModel(source, errorKey = 'formError') {
++      if (String(source.vehicle_model ?? '').trim()) {
++        this[errorKey] = '';
++        return false;
++      }
++      this[errorKey] = `${this.t('asset_model')} is required.`;
++      useAlert(this[errorKey]);
++      return true;
++    },
+     // Empty strings mean "unset" — convert them to null so the backend's
+     // Optional[...] fields (and PATCH's "skip null" filter) behave correctly.
+     buildPayload(source) {
+@@ -101,6 +119,7 @@ export default {
+       }
+     },
+     async create() {
++      if (this.missingVehicleModel(this.form)) return;
+       this.saving = true;
+       try {
+         await createRsaIncident(this.buildPayload(this.form));
+@@ -118,6 +137,7 @@ export default {
+     },
+     startEdit(incident) {
+       this.editingId = incident.id;
++      this.editError = '';
+       this.editForm = {
+         ...EMPTY_FORM,
+         ...incident,
+@@ -132,9 +152,11 @@ export default {
+     },
+     cancelEdit() {
+       this.editingId = null;
++      this.editError = '';
+       this.editForm = { ...EMPTY_FORM };
+     },
+     async saveEdit(id) {
++      if (this.missingVehicleModel(this.editForm, 'editError')) return;
+       this.saving = true;
+       try {
+         await updateRsaIncident(id, this.buildPayload(this.editForm));
+@@ -269,11 +291,12 @@ export default {
+         </div>
+         <div>
+           <label class="block mb-1 text-sm text-n-slate-11"
+-            >{{ t('asset_model') }}</label
++            >{{ t('asset_model') }} *</label
+           >
+           <input
+             v-model="form.vehicle_model"
+             type="text"
++            required
+             class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+           />
+         </div>
+@@ -391,6 +414,13 @@ export default {
+             class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+           />
+         </div>
++        <p
++          v-if="formError"
++          role="alert"
++          class="m-0 text-sm md:col-span-2 text-n-ruby-11"
++        >
++          {{ formError }}
++        </p>
+         <div class="md:col-span-2">
+           <button
+             type="submit"
+@@ -470,8 +500,16 @@ export default {
+                   <input
+                     v-model="editForm.vehicle_model"
+                     type="text"
++                    required
+                     class="w-28 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
+                   />
++                  <p
++                    v-if="editError"
++                    role="alert"
++                    class="m-0 mt-1 text-xs text-n-ruby-11"
++                  >
++                    {{ editError }}
++                  </p>
+                 </td>
+                 <td class="px-2 py-1">
+                   <input

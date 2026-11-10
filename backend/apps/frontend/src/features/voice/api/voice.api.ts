@@ -1,10 +1,18 @@
 import { API_BASE_URL } from '@/plugins/api';
 import type { HandoffPayload } from '@/features/chat/types';
 import type { VoiceTurnResult } from '@/features/voice/types';
+import { personaFields } from '@/features/phone/personas';
 
-export async function postVoiceTurn(sessionId: string, audio: Blob): Promise<VoiceTurnResult> {
+/** `personaPhone`: the test-console persona's number ('' = anonymous, sends nothing). */
+export async function postVoiceTurn(
+  sessionId: string,
+  audio: Blob,
+  personaPhone = '',
+): Promise<VoiceTurnResult> {
   const form = new FormData();
   form.append('session_id', sessionId);
+  const persona = personaFields(personaPhone).persona_phone;
+  if (persona) form.append('persona_phone', persona);
   // Gemini accepts audio/wav natively — the backend forwards UploadFile.content_type
   // straight into the ADK Part, so the blob type is what matters here.
   const filename = audio.type.includes('wav')

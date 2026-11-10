@@ -1,11 +1,17 @@
 import { API_BASE_URL } from '@/plugins/api';
 import type { ChatTurnResponse, CsatResponse } from '@/features/chat/types';
+import { personaFields } from '@/features/phone/personas';
 
-export async function postChatTurn(sessionId: string, text: string): Promise<ChatTurnResponse> {
+/** `personaPhone`: the test-console persona's number ('' = anonymous, sends nothing). */
+export async function postChatTurn(
+  sessionId: string,
+  text: string,
+  personaPhone = '',
+): Promise<ChatTurnResponse> {
   const res = await fetch(`${API_BASE_URL}/chat/turn`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId, text }),
+    body: JSON.stringify({ session_id: sessionId, text, ...personaFields(personaPhone) }),
   });
   if (!res.ok) {
     const body = await res.text();

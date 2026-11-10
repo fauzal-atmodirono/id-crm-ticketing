@@ -78,6 +78,9 @@ class AgentClientResolver:
         # lookups inline (bounded by the caller's asyncio.wait_for).
         self._target: HandoffTarget | None = None
         self._warm = False
+        # (assignee id | None, registered ids) kept from prefetch: they rarely
+        # change mid-call, so resolve() re-reads ONLY presence.
+        self._ident: tuple[int | None, set[int]] | None = None
 
     async def prefetch(self) -> None:
         """Warm the answer off the audio path. Fire-and-forget from call
@@ -109,7 +112,9 @@ class AgentClientResolver:
         if not self._ticket_id_provider():
             return
         try:
-            self._target = await self._lookup()
+            ident = await self._identify()
+            self._target = await self._decide(ident)
+            self._ident = ident
             self._warm = True
         except Exception as e:
             _log.error("agent_client_prefetch_failed", error=str(e))
@@ -117,8 +122,19 @@ class AgentClientResolver:
     async def resolve(self) -> HandoffTarget | None:
         if not self._settings.phone_agent_softphone_enabled:
             return None
-        if self._warm:
+        # With a presence source the cached DECISION is not trusted: who is
+        # Busy/Offline changes between call start (prefetch) and the handoff
+        # minutes later. Assignee + registered set stay cached; only presence
+        # is re-read, once. The live lookup is bounded by the caller's wait_for.
+        if self._warm and self._presence_fetcher is None:
             return self._target
+        if self._warm and self._ident is not None:
+            try:
+                return await self._decide(self._ident)
+            except Exception as e:
+                # A warm target beats None when the live read fails.
+                _log.error("agent_client_live_presence_failed_using_warm", error=str(e))
+                return self._target
         try:
             return await self._lookup()
         except Exception as e:  # never raise into the audio pump
@@ -128,66 +144,108 @@ class AgentClientResolver:
     async def _lookup(self) -> HandoffTarget | None:
         """Returns None for every legitimate "not this resolver" outcome
         (no ticket yet, no assignee, non-numeric assignee, assignee not
-        registered). RAISES for actual I/O failures (Chatwoot/registry
-        errors) so callers can tell "no answer" from "couldn't find out" --
-        the former is cacheable by `prefetch()`, the latter is not.
+        registered, nobody online). RAISES for actual I/O failures
+        (Chatwoot/registry errors) so callers can tell "no answer" from
+        "couldn't find out" -- the former is cacheable by `prefetch()`, the
+        latter is not.
         """
+        ident = await self._identify()
+        if ident is None:
+            return None
+        return await self._decide(ident)
+
+    async def _identify(self) -> tuple[int | None, set[int]] | None:
+        """Assignee id (None = nobody specific) and the registered softphone
+        ids. None = no ticket yet / flag off (zero round trips)."""
         if not self._settings.phone_agent_softphone_enabled:
             return None
         ticket_id = self._ticket_id_provider()
         if not ticket_id:
             # The call-start create failed, or chatwoot_enabled is False.
-            # Returning here costs zero round trips -- see the test.
             return None
         try:
             assignee = await self._log_port.get_conversation_assignee(ticket_id)
         except Exception as e:
             _log.error("agent_client_assignee_lookup_failed", ticket_id=ticket_id, error=str(e))
             raise
+        agent_id: int | None = None
         if not assignee:
-            # This path used to `return None` SILENTLY, and it is the single
-            # most common inbound case: Chatwoot phone conversations are
-            # created unassigned. Returning None sent the chain to the PSTN
-            # resolver and, with no hunt-group number configured, to
-            # "ticket_created" -- no dial at all, so the stage-2 fan-out (which
-            # only fires from a stage-1 dial's callback) never ran and NOBODY
-            # rang. Fan out immediately instead. The missing log line is why
-            # this was invisible in production.
+            # Chatwoot phone conversations are created unassigned -- the most
+            # common inbound case. Fan out immediately (a silent None here
+            # once meant NOBODY rang; the log line makes it visible).
             _log.info("agent_client_no_assignee_fanning_out", ticket_id=ticket_id)
-            return await self._fanout_target()
-        agent_id = assignee_to_agent_id(assignee)
-        if agent_id is None:
-            _log.warning("agent_client_assignee_not_numeric", assignee=str(assignee))
-            return await self._fanout_target()
+        else:
+            agent_id = assignee_to_agent_id(assignee)
+            if agent_id is None:
+                _log.warning("agent_client_assignee_not_numeric", assignee=str(assignee))
+        if agent_id is None and self._presence_fetcher is None:
+            return agent_id, set()  # nothing to fan out with; skip the registry read
         try:
             registered = await self._registry.registered_ids()
         except Exception as e:
             _log.error("agent_client_registry_failed", error=str(e))
             raise
-        if agent_id not in registered:
-            _log.info("agent_client_assignee_not_registered", agent_id=agent_id)
-            return await self._fanout_target()
-        return HandoffTarget(kind="client", value=agent_identity(agent_id))
+        return agent_id, set(registered)
 
-    async def _fanout_target(self) -> HandoffTarget | None:
+    async def _decide(self, ident: tuple[int | None, set[int]]) -> HandoffTarget | None:
+        agent_id, registered = ident
+        agents = await self._read_presence()
+        if agent_id is not None:
+            if agent_id not in registered:
+                _log.info("agent_client_assignee_not_registered", agent_id=agent_id)
+            elif agents is None:
+                # Presence unknown (no fetcher, a raise, or the real fetcher's
+                # [] on a Chatwoot error): fail open, ring the assignee.
+                return HandoffTarget(kind="client", value=agent_identity(agent_id))
+            elif any(a.id == agent_id and a.availability_status == "online" for a in agents):
+                return HandoffTarget(kind="client", value=agent_identity(agent_id))
+            else:
+                # Busy/Offline/not in Chatwoot's list: ringing them for the
+                # whole stage-1 timeout interrupts them (or nobody). The
+                # fan-out filters to `online`, so it excludes them.
+                _log.info("agent_client_assignee_not_online_fanning_out", agent_id=agent_id)
+        return self._fanout_target(registered, agents)
+
+    async def _read_presence(self) -> list[Any] | None:
+        """Agents, or None when presence is unknown. The real
+        `PresenceFetcher.fetch_agents` NEVER raises: on any error it returns
+        [], so an empty list means "unknown", not "nobody exists"."""
+        if self._presence_fetcher is None:
+            return None
+        try:
+            agents = await self._presence_fetcher.fetch_agents()
+        except Exception as e:
+            _log.warning("agent_client_presence_failed", error=str(e))
+            return None
+        if not agents:
+            _log.warning("agent_client_presence_unknown_ringing_assignee")
+            return None
+        return list(agents)
+
+    def _fanout_target(
+        self, registered: set[int], agents: list[Any] | None
+    ) -> HandoffTarget | None:
         """Every agent who is BOTH registered on a softphone and `online` in
         Chatwoot, as a single multi-noun `<Dial>` target.
 
-        Used whenever stage 1 has no one specific to ring. `busy`/`offline`
-        are excluded deliberately -- `busy` means already on something, and
-        ringing them would interrupt one customer to serve another.
+        `busy`/`offline` are excluded deliberately -- `busy` means already on
+        something, and ringing them would interrupt one customer to serve
+        another. `agents=None` means presence is UNKNOWN (Chatwoot error); an
+        empty answer there must not drop the dial, so every registered agent
+        is rung instead (logged).
 
         Returns None (chain continues to the PSTN fallback, then the apology)
-        when nobody is eligible. Raises on I/O failure so `prefetch()` does not
-        cache a transient outage as "nobody available".
+        when nobody is eligible.
         """
         if self._presence_fetcher is None:
             return None
-        registered = await self._registry.registered_ids()
-        agents = await self._presence_fetcher.fetch_agents()
-        eligible = sorted(
-            a.id for a in agents if a.id in registered and a.availability_status == "online"
-        )
+        if agents is None:
+            _log.warning("agent_client_fanout_presence_unknown_ringing_registered")
+            eligible = sorted(registered)
+        else:
+            eligible = sorted(
+                a.id for a in agents if a.id in registered and a.availability_status == "online"
+            )
         cap = self._settings.phone_fanout_max_agents
         if len(eligible) > cap:
             # Twilio rejects a <Dial> with more than 10 nouns, which DROPS a

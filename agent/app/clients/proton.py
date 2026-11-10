@@ -403,8 +403,11 @@ class ProtonConfigClient:
         Returns the parsed response dict — keys ``reply`` (str|None),
         ``handoff`` (dict|None), ``products`` (list), ``forwarded_to_agent``
         (bool) — or None on any error, non-2xx, or non-dict body (fail-open, so
-        the caller can degrade to a Chatwoot handoff). The endpoint is
-        unauthenticated; the client's x-api-key header is harmless."""
+        the caller can degrade to a Chatwoot handoff). The client's x-api-key
+        header is LOAD-BEARING here: the backend refuses server-owned session
+        ids (``crm-<id>`` among them) on /chat/turn without PROTON_BACKEND_KEY
+        (R49), so a missing or wrong key turns every turn into a 403 and a
+        fail-open handoff."""
         try:
             # /chat/turn runs the full ADK agent (KB + Gemini + tools) and
             # routinely takes 10-15s — far longer than the client's default 10s

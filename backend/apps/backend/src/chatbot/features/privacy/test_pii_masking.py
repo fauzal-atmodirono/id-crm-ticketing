@@ -324,7 +324,8 @@ async def test_bulleted_text_is_not_a_mask(tmp_path) -> None:
         assert res.status_code == 200, (who, res.text)
     created = client.post(
         "/rsa/incidents",
-        json={"incident_date": "2026-11-02", "vehicle_no": "W1", "cause": "• flat"},
+        json={"incident_date": "2026-11-02", "vehicle_no": "W1", "cause": "• flat",
+              "vehicle_model": "X50"},
         headers=session("agent"),
     )
     assert created.status_code == 200
@@ -463,3 +464,38 @@ async def test_case_fields_masked_and_masked_write_refused(tmp_path) -> None:
     )
     assert res.status_code == 400
     merge.assert_not_called()
+
+
+# --- Brief 11 / R59: the conversation-panel DMS card -----------------------------
+
+
+async def test_dms_card_is_masked_for_a_caller_without_pii_view(tmp_path) -> None:
+    from chatbot.features.chat.dms_client import MockDmsClient
+    from chatbot.features.chat.dms_config_store import DmsConfig
+
+    class _Store:
+        async def get(self):
+            return DmsConfig(
+                enabled=True, provider_label="DMS", base_url="https://dms.example.com",
+                auth_type="api_key_header", extra_header_name="", extra_header_value="",
+                timeout_seconds=5.0, retries=0,
+            )
+
+    repo = await _repo(tmp_path)
+    chatwoot = AsyncMock()
+    chatwoot.get_conversation.return_value = {
+        "id": 1, "inbox_id": 3, "labels": [], "meta": {"sender": {"id": 11, "phone_number": PHONE}},
+    }
+    client = _client(
+        build_customer360_router(
+            chatwoot, InMemoryRsaRepository(), repo, FakeValidator(TOKENS), _settings(),
+            dms_config_store=_Store(), dms_client=MockDmsClient(environment="sandbox"),
+        )
+    )
+    clear = client.get("/admin/customer360/dms?conversation_id=1", headers=session("viewer"))
+    raw_phone = clear.json()["dms"]["customer"]["phone"]
+    assert raw_phone and MASK not in raw_phone
+    masked = client.get("/admin/customer360/dms?conversation_id=1", headers=session("agent"))
+    masked_phone = masked.json()["dms"]["customer"]["phone"]
+    assert MASK in masked_phone and masked_phone[-4:] == raw_phone[-4:]
+    assert raw_phone not in masked.text

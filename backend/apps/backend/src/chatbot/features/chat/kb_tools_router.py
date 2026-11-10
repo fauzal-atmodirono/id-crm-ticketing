@@ -10,7 +10,9 @@ Endpoints (all guarded by ``x-api-key``):
 Security rules enforced here:
 - ``auth_config`` is NEVER returned in any response (``to_safe_dict()``).
 - ``endpoint_url`` must be HTTPS (422 otherwise).
-- ``param_schema`` must be a dict with a ``"type"`` key (422 otherwise).
+- ``param_schema`` must be a dict with a ``"type"`` key (422 otherwise); an
+  empty or missing one means "no parameters" and is stored as
+  ``{"type": "object", "properties": {}}`` (tracker KNOW-006).
 - Slug must match ``^[a-zA-Z_][a-zA-Z0-9_]*$`` and be ≤ 64 chars.
 - Slug must be unique across custom tools AND built-in tool names (409).
 - Hard cap: ≤ 15 custom tools per tenant (409 if exceeded).
@@ -57,7 +59,7 @@ class ToolCreateRequest(BaseModel):
     http_method: str = Field(default="GET")
     auth_type: str = Field(default="none")
     auth_config: dict[str, Any] = Field(default_factory=dict)
-    param_schema: dict[str, Any] = Field(default_factory=dict)
+    param_schema: dict[str, Any] | None = None
     request_template: str = Field(default="")
     response_template: str = Field(default="")
     enabled: bool = True
@@ -134,12 +136,16 @@ def build_kb_tools_router(  # noqa: PLR0915 — one builder, many route closures
                 detail="endpoint_url must start with https://",
             )
 
-    def _validate_param_schema(schema: dict[str, Any]) -> None:
+    def _normalise_param_schema(schema: dict[str, Any] | None) -> dict[str, Any]:
+        """Empty/missing -> a no-parameter object schema; otherwise needs "type"."""
+        if not schema:
+            return {"type": "object", "properties": {}}
         if "type" not in schema:
             raise HTTPException(
                 status_code=422,
                 detail="param_schema must be a dict containing a 'type' key",
             )
+        return schema
 
     # ------------------------------------------------------------------
     # GET /kb/tools
@@ -196,8 +202,8 @@ def build_kb_tools_router(  # noqa: PLR0915 — one builder, many route closures
         # Validate endpoint_url HTTPS.
         _validate_endpoint_url(payload.endpoint_url)
 
-        # Validate param_schema.
-        _validate_param_schema(payload.param_schema)
+        # Validate param_schema (empty -> no parameters).
+        param_schema = _normalise_param_schema(payload.param_schema)
 
         # Resolve slug.
         try:
@@ -234,7 +240,7 @@ def build_kb_tools_router(  # noqa: PLR0915 — one builder, many route closures
             http_method=payload.http_method,
             auth_type=payload.auth_type,
             auth_config=payload.auth_config,
-            param_schema=payload.param_schema,
+            param_schema=param_schema,
             request_template=payload.request_template,
             response_template=payload.response_template,
             enabled=payload.enabled,
@@ -264,7 +270,7 @@ def build_kb_tools_router(  # noqa: PLR0915 — one builder, many route closures
         if "endpoint_url" in fields:
             _validate_endpoint_url(fields["endpoint_url"])
         if "param_schema" in fields:
-            _validate_param_schema(fields["param_schema"])
+            fields["param_schema"] = _normalise_param_schema(fields["param_schema"])
 
         await store.update_custom(slug, fields)
         return {"slug": slug, "status": "ok"}

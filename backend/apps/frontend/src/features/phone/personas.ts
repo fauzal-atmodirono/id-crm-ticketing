@@ -72,3 +72,45 @@ export const PERSONAS: Persona[] = [
       'The assistant asks for your mobile number and name: say e.g. "zero zero zero zero zero zero zero one zero one" and "Ahmad". A wrong name is treated as a new caller.',
   },
 ]
+
+// --- Chat / Voice tabs (brief 6, 2026-11-09) ---------------------------------
+// The same personas, for the Chat and Voice tabs: the number is sent with each
+// turn as `persona_phone`, and the backend uses it ONLY with
+// CHAT_TURN_CALLER_CONTEXT_ENABLED + PHONE_WEB_CALL_AS_ENABLED and a number on
+// PHONE_WEB_CALL_AS_NUMBERS (anything else stays anonymous). "Anonymous" is
+// the default and sends no number at all.
+// No imports in this file: tests/personas.test.ts runs it under plain Node.
+
+export const ANONYMOUS_PERSONA_ID = 'anonymous'
+
+export interface ChatPersona {
+  id: string
+  label: string
+  /** E.164; '' = anonymous. */
+  number: string
+  description: string
+}
+
+export const CHAT_PERSONAS: ChatPersona[] = [
+  {
+    id: ANONYMOUS_PERSONA_ID,
+    label: 'Anonymous (no CRM record)',
+    number: '',
+    description: 'The bot does not know who you are.',
+  },
+  ...PERSONAS.filter((p) => p.number).map((p) => ({
+    id: p.id,
+    label: p.label,
+    number: p.number,
+    description: p.description,
+  })),
+]
+
+export function chatPersonaNumber(id: string): string {
+  return CHAT_PERSONAS.find((p) => p.id === id)?.number ?? ''
+}
+
+/** The extra request fields for a turn: the persona number only when one is chosen. */
+export function personaFields(number: string): { persona_phone?: string } {
+  return number ? { persona_phone: number } : {}
+}

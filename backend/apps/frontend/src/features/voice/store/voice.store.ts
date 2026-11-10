@@ -1,15 +1,17 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { openAgentStream } from '@/features/chat/api/chat.api';
 import type { AgentMessageEvent } from '@/features/chat/types';
 import { postVoiceTurn, postVoiceTts } from '@/features/voice/api/voice.api';
+import { ANONYMOUS_PERSONA_ID, chatPersonaNumber } from '@/features/phone/personas';
+import { newSessionId } from '@/features/chat/sessionId';
 import type { HandoffPayload } from '@/features/chat/types';
 import type { VoiceEntry } from '@/features/voice/types';
 
 export type ConversationPhase = 'idle' | 'listening' | 'processing' | 'speaking';
 
 export const useVoiceStore = defineStore('voice', () => {
-  const sessionId = ref<string>(`voice-${Math.floor(Math.random() * 9999)}`);
+  const sessionId = ref<string>(newSessionId('voice'));
   const entries = ref<VoiceEntry[]>([
     {
       kind: 'system',
@@ -17,6 +19,9 @@ export const useVoiceStore = defineStore('voice', () => {
     },
   ]);
   const isSending = ref<boolean>(false);
+  // Test-console persona (brief 6): '' number = anonymous (the default).
+  const personaId = ref<string>(ANONYMOUS_PERSONA_ID);
+  const personaPhone = computed(() => chatPersonaNumber(personaId.value));
   const phase = ref<ConversationPhase>('idle');
   const handoff = ref<HandoffPayload | null>(null);
   const activeAudio = ref<HTMLAudioElement | null>(null);
@@ -93,10 +98,18 @@ export const useVoiceStore = defineStore('voice', () => {
   function resetSession(): void {
     closeAgentStream();
     stopAssistantAudio();
-    sessionId.value = `voice-${Math.floor(Math.random() * 9999)}`;
+    sessionId.value = newSessionId('voice');
     entries.value = [{ kind: 'system', text: `New session: ${sessionId.value}` }];
     phase.value = 'idle';
     handoff.value = null;
+  }
+
+  /** A persona change starts a fresh session: the backend resolves who the
+   *  customer is once per session. */
+  function setPersona(id: string): void {
+    if (id === personaId.value) return;
+    personaId.value = id;
+    resetSession();
   }
 
   function setPhase(next: ConversationPhase): void {
@@ -123,7 +136,7 @@ export const useVoiceStore = defineStore('voice', () => {
     isSending.value = true;
     phase.value = 'processing';
     try {
-      const result = await postVoiceTurn(sessionId.value, blob);
+      const result = await postVoiceTurn(sessionId.value, blob, personaPhone.value);
 
       // Replace the placeholder with the transcribed text if available.
       if (result.userTranscription) {
@@ -200,6 +213,9 @@ export const useVoiceStore = defineStore('voice', () => {
     handoff,
     submitAudio,
     resetSession,
+    personaId,
+    personaPhone,
+    setPersona,
     setPhase,
     activeAudio,
     stopAssistantAudio,

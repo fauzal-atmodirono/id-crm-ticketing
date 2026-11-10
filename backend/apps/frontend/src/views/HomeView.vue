@@ -3,7 +3,7 @@ import { ref } from 'vue';
 import ChannelTabs, { type Channel } from '@/components/ui/ChannelTabs.vue';
 import { ChatLog, ChatInput, useChatStore } from '@/features/chat';
 import { VoiceLog, VoiceRecorder, useVoiceStore } from '@/features/voice';
-import { PhoneCall } from '@/features/phone';
+import { PersonaPicker, PhoneCall } from '@/features/phone';
 import { DemoConsole } from '@/features/demo';
 
 const channel = ref<Channel>('chat');
@@ -37,9 +37,20 @@ function reset(): void {
       </aside>
     </transition>
 
+    <PersonaPicker
+      v-if="channel === 'chat'"
+      :model-value="chat.personaId"
+      @update:model-value="chat.setPersona"
+    />
+    <PersonaPicker
+      v-else-if="channel === 'voice'"
+      :model-value="voice.personaId"
+      @update:model-value="voice.setPersona"
+    />
     <p v-if="channel === 'chat' || channel === 'voice'" class="persona-note">
-      These tabs talk to the bot anonymously. To chat, send photos or voice notes and call
-      <em>as a demo customer</em> (one CRM contact, history in Customer 360), use the
+      Anonymous by default. Pick a demo customer and the bot greets them by name and uses what
+      the CRM already knows (demo numbers only; changing it starts a new session). To post
+      into one CRM contact with history in Customer 360, use the
       <router-link to="/customer">Customer app</router-link>.
     </p>
 

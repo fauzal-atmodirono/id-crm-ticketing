@@ -30,7 +30,7 @@ def test_create_requires_api_key(client):
 def test_create_list_get_incident(client):
     create_res = client.post(
         "/rsa/incidents",
-        json={"incident_date": "2026-07-01", "vehicle_no": "VPP8636", "cause": "Flat Tyre"},
+        json={"incident_date": "2026-07-01", "vehicle_no": "VPP8636", "cause": "Flat Tyre", "vehicle_model": "e.MAS 7"},
         headers=_headers(),
     )
     assert create_res.status_code == 200
@@ -53,7 +53,7 @@ def test_get_missing_incident_404(client):
 def test_update_and_delete_incident(client):
     incident_id = client.post(
         "/rsa/incidents",
-        json={"incident_date": "2026-07-01", "vehicle_no": "VPP8636", "cause": "Flat Tyre"},
+        json={"incident_date": "2026-07-01", "vehicle_no": "VPP8636", "cause": "Flat Tyre", "vehicle_model": "e.MAS 7"},
         headers=_headers(),
     ).json()["id"]
 
@@ -70,7 +70,7 @@ def test_update_and_delete_incident(client):
 def test_aggregate_endpoint(client):
     client.post(
         "/rsa/incidents",
-        json={"incident_date": "2026-07-01", "vehicle_no": "A1", "cause": "Flat Tyre"},
+        json={"incident_date": "2026-07-01", "vehicle_no": "A1", "cause": "Flat Tyre", "vehicle_model": "e.MAS 7"},
         headers=_headers(),
     )
     response = client.get("/rsa/incidents/aggregate", headers=_headers())
@@ -81,7 +81,7 @@ def test_aggregate_endpoint(client):
 def test_csv_export(client):
     client.post(
         "/rsa/incidents",
-        json={"incident_date": "2026-07-01", "vehicle_no": "A1", "cause": "Flat Tyre"},
+        json={"incident_date": "2026-07-01", "vehicle_no": "A1", "cause": "Flat Tyre", "vehicle_model": "e.MAS 7"},
         headers=_headers(),
     )
     response = client.get("/rsa/incidents/export?format=csv", headers=_headers())
@@ -124,7 +124,10 @@ def _session(token):
     }
 
 
-_BODY = {"incident_date": "2026-07-01", "vehicle_no": "VPP8636", "cause": "Flat Tyre"}
+_FULL = {"incident_date": "2026-07-01", "vehicle_no": "VPP8636", "cause": "Flat Tyre",
+         "vehicle_model": "e.MAS 7"}
+
+_BODY = {"incident_date": "2026-07-01", "vehicle_no": "VPP8636", "cause": "Flat Tyre", "vehicle_model": "e.MAS 7"}
 
 
 def test_rsa_shared_key_only_is_401_when_rbac_on():
@@ -160,9 +163,63 @@ def test_csv_export_neutralises_formula_cells(client):
     with a leading apostrophe so a spreadsheet shows it instead of running it."""
     client.post(
         "/rsa/incidents",
-        json={"incident_date": "2026-07-01", "vehicle_no": "A1", "cause": "=HYPERLINK(\"x\")"},
+        json={"incident_date": "2026-07-01", "vehicle_no": "A1", "cause": "=HYPERLINK(\"x\")", "vehicle_model": "e.MAS 7"},
         headers=_headers(),
     )
     response = client.get("/rsa/incidents/export?format=csv", headers=_headers())
     assert "'=HYPERLINK" in response.text
     assert ",=HYPERLINK" not in response.text
+
+
+# --- RSA-001: vehicle model is required on the operator API ----------------
+
+
+def test_create_without_vehicle_model_is_422_naming_field(client):
+    for body in (
+        {"incident_date": "2026-07-01", "vehicle_no": "A1", "cause": "Flat Tyre"},
+        {"incident_date": "2026-07-01", "vehicle_no": "A1", "cause": "Flat Tyre",
+         "vehicle_model": "   "},
+        {"incident_date": "2026-07-01", "vehicle_no": "A1", "cause": "Flat Tyre",
+         "vehicle_model": None},
+    ):
+        res = client.post("/rsa/incidents", json=body, headers=_headers())
+        assert res.status_code == 422, body
+        assert "vehicle_model is required" in res.text
+    assert client.get("/rsa/incidents", headers=_headers()).json()["incidents"] == []
+
+
+def test_create_with_vehicle_model_saves_trimmed(client):
+    res = client.post("/rsa/incidents", json={**_FULL, "vehicle_model": " e.MAS 7 "},
+                      headers=_headers())
+    assert res.status_code == 200
+    got = client.get(f"/rsa/incidents/{res.json()['id']}", headers=_headers()).json()
+    assert got["vehicle_model"] == "e.MAS 7"
+
+
+def test_patch_cannot_blank_vehicle_model(client):
+    iid = client.post("/rsa/incidents", json=_FULL, headers=_headers()).json()["id"]
+    for value in ("", "  "):
+        res = client.patch(f"/rsa/incidents/{iid}", json={"vehicle_model": value},
+                           headers=_headers())
+        assert res.status_code == 422
+        assert "vehicle_model is required" in res.text
+    got = client.get(f"/rsa/incidents/{iid}", headers=_headers()).json()
+    assert got["vehicle_model"] == "e.MAS 7"
+
+
+def test_legacy_incident_without_model_still_lists_and_patches():
+    """Records saved before the rule (or by the seeder) still load and can be
+    edited without being forced to add a model in the same PATCH."""
+    import asyncio
+
+    settings = get_settings().model_copy(update={"faq_admin_api_key": "test-key"})
+    repo = InMemoryRsaRepository()
+    iid = asyncio.run(repo.create_incident(
+        incident_date="2026-07-01", vehicle_no="OLD1", cause="Flat Tyre"))
+    app = FastAPI()
+    app.include_router(build_rsa_router(repo, settings))
+    c = TestClient(app)
+    rows = c.get("/rsa/incidents", headers=_headers()).json()["incidents"]
+    assert rows[0]["vehicle_model"] is None
+    assert c.patch(f"/rsa/incidents/{iid}", json={"remarks": "ok"},
+                   headers=_headers()).status_code == 200

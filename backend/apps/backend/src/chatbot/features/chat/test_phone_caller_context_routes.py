@@ -209,7 +209,7 @@ def test_stream_looks_up_a_verified_caller_before_the_greeting() -> None:
     }
     cap = _stream(_settings(), svc, params)
     assert svc.lookups == [(PHONE, "caller_id")]
-    assert "Am I speaking with Ahmad?" in cap["instruction"]
+    assert "Hi Ahmad" in cap["instruction"] and "Proton X50" in cap["instruction"]
     assert PHONE not in cap["instruction"] and "DMO1101" not in cap["instruction"]
     assert "save_caller_details" in cap["tools"] and "lookup_caller" not in cap["tools"]
 

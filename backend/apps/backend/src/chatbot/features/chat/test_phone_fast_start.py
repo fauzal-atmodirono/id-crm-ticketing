@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
 from chatbot.features.chat.phone.caller_context import CallerContext, sign_caller
-from chatbot.features.chat.router import build_chat_router
+from chatbot.features.chat.router import _GREETING_PROMPT, build_chat_router
 from chatbot.features.demo import personas
 from chatbot.platform.config import Settings
 from chatbot.platform.server import create_app
@@ -57,16 +57,18 @@ def _sig(url: str, params: dict[str, str]) -> str:
     return base64.b64encode(hmac.new(TOKEN.encode(), data.encode(), hashlib.sha1).digest()).decode()
 
 
+_AHMAD_ROWS: list[dict[str, Any]] = [{"contact_id": 11, "name": "[DEMO] Ahmad"}]
+
+
 class _Service:
-    def __init__(self) -> None:
+    def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
         self.lookups: list[tuple[str, str]] = []
         self.dealer_calls = 0
+        self.rows = _AHMAD_ROWS if rows is None else rows
 
     async def lookup(self, phone: str, source: str) -> CallerContext:
         self.lookups.append((phone, source))
-        return CallerContext.from_candidates(
-            phone, source, [{"contact_id": 11, "name": "[DEMO] Ahmad"}]
-        )
+        return CallerContext.from_candidates(phone, source, self.rows)
 
     async def dealer_slugs(self) -> list[str]:
         self.dealer_calls += 1
@@ -229,7 +231,7 @@ def test_stream_without_prefetch_still_looks_up() -> None:
     ):
         ws.send_json(_start(params))
     assert svc.lookups == [(PHONE, "caller_id")]
-    assert "Am I speaking with Ahmad?" in cap["instruction"]
+    assert "Hi Ahmad" in cap["instruction"]
 
 
 def test_web_call_as_persona_starts_in_its_language() -> None:
@@ -304,3 +306,55 @@ def test_unsigned_incoming_starts_no_prefetch() -> None:
         res = client.post("/voice/phone/incoming", data=FORM, headers={"X-Twilio-Signature": "x"})
         assert res.status_code == 200
     assert svc.lookups == [] and svc.dealer_calls == 0
+
+
+# --- R47 (brief 6): the greeting cue never overrides personalisation -------
+
+_SIGNED = {
+    "caller": PHONE,
+    "caller_source": "caller_id",
+    "caller_sig": sign_caller(TOKEN, "CA1", "caller_id", PHONE),
+}
+
+
+def _greetings(settings: Settings, svc: _Service) -> tuple[list[str], str]:
+    cap: dict[str, Any] = {}
+    with (
+        TestClient(_app(settings, svc, _Tts(None), cap)) as client,
+        client.websocket_connect("/voice/phone/stream") as ws,
+    ):
+        ws.send_json(_start(_SIGNED))
+        ws.send_json(MEDIA)
+    return cap["live"].greetings, cap["instruction"]
+
+
+def test_fast_start_greets_a_recognised_caller_by_first_name() -> None:
+    greetings, instruction = _greetings(_settings(), _Service())
+    assert len(greetings) == 1
+    assert "first name" in greetings[0] and "CALL FLOW" in greetings[0]
+    assert greetings[0] != _GREETING_PROMPT
+    assert "Ahmad" not in greetings[0]  # the name stays in the instruction only
+    assert "Hi Ahmad" in instruction
+
+
+def test_fast_start_greeting_for_an_unknown_caller_is_unchanged() -> None:
+    greetings, _ = _greetings(_settings(), _Service(rows=[]))
+    assert greetings == [_GREETING_PROMPT]
+
+
+def test_fast_start_greeting_for_a_shared_number_is_unchanged() -> None:
+    rows = [{"contact_id": 11, "name": "Ahmad"}, {"contact_id": 12, "name": "Siti"}]
+    greetings, _ = _greetings(_settings(), _Service(rows=rows))
+    assert greetings == [_GREETING_PROMPT]
+
+
+def test_caller_context_off_keeps_the_old_greeting() -> None:
+    greetings, instruction = _greetings(_settings(phone_caller_context_enabled=False), _Service())
+    assert greetings == [_GREETING_PROMPT]
+    assert "Hi Ahmad" not in instruction
+
+
+def test_without_fast_start_the_first_reply_is_personal() -> None:
+    greetings, instruction = _greetings(_settings(phone_fast_start_enabled=False), _Service())
+    assert greetings == []  # the caller speaks first
+    assert "Be personal from your first sentence" in instruction and "Hi Ahmad" in instruction

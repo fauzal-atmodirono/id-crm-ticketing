@@ -228,11 +228,21 @@ def build_ai_agent(  # noqa: PLR0915 — one builder, many tool closures
         Args:
             tool_context: Context injected by the ADK runner.
             full_name: The customer's full name.
-            phone_number: The customer's contact phone number.
+            phone_number: The customer's contact phone number. If the customer is
+                recognised from our records (you were told you already have their
+                phone number), pass phone_number="" -- the server fills it in.
+                You must never invent or guess a number; only pass one the
+                customer gave you.
             email: The customer's contact email address.
             preferred_model: The Proton model of interest (e.g. Saga, Persona, Iriz, X50, X70, X90, S70).
             preferred_dealer: Customer's preferred dealer location or city/state.
         """
+        # R51: a recognised customer's number is known server-side (signed
+        # WhatsApp sender / allowlisted console persona). Fill it only when
+        # the model left it empty -- what the customer gave always wins, and
+        # the model never guesses it.
+        if not (phone_number or "").strip():
+            phone_number = str(tool_context.state.get("caller_trusted_phone") or "")
         lead_data = {
             "customer_name": full_name,
             "customer_phone": phone_number,

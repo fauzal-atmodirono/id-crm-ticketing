@@ -269,3 +269,120 @@ async def test_assignee_still_wins_over_fanout(settings, log_port, registry):
 
     assert target.kind == "client"
     assert target.value == "agent_7"
+
+
+# --- stage 1 presence (brief 9) ---------------------------------------------
+
+
+def _with_presence(settings, log_port, registry, presence):
+    return AgentClientResolver(settings, log_port, registry, lambda: "42", presence)
+
+
+async def test_online_registered_assignee_is_rung_alone(settings, log_port, registry):
+    log_port.get_conversation_assignee.return_value = "7"
+    registry.registered_ids.return_value = {1, 7}
+    r = _with_presence(settings, log_port, registry, _presence(_Agent(1), _Agent(7)))
+    assert await r.resolve() == HandoffTarget(kind="client", value="agent_7")
+
+
+@pytest.mark.parametrize("status", ["busy", "offline"])
+async def test_busy_or_offline_assignee_skipped_for_online_others(
+    settings, log_port, registry, status
+):
+    log_port.get_conversation_assignee.return_value = "7"
+    registry.registered_ids.return_value = {1, 7}
+    r = _with_presence(settings, log_port, registry, _presence(_Agent(1), _Agent(7, status)))
+    target = await r.resolve()
+    assert target == HandoffTarget(kind="clients", value="agent_1")
+
+
+async def test_presence_raise_rings_the_assignee(settings, log_port, registry):
+    log_port.get_conversation_assignee.return_value = "7"
+    registry.registered_ids.return_value = {1, 7}
+    p = AsyncMock()
+    p.fetch_agents.side_effect = RuntimeError("chatwoot down")
+    r = _with_presence(settings, log_port, registry, p)
+    assert await r.resolve() == HandoffTarget(kind="client", value="agent_7")
+
+
+async def test_empty_presence_list_means_unknown_and_rings_the_assignee(
+    settings, log_port, registry
+):
+    """The real PresenceFetcher.fetch_agents never raises: on a Chatwoot error
+    it returns []. That must not read as "assignee not online"."""
+    log_port.get_conversation_assignee.return_value = "7"
+    registry.registered_ids.return_value = {1, 7}
+    r = _with_presence(settings, log_port, registry, _presence())
+    assert await r.resolve() == HandoffTarget(kind="client", value="agent_7")
+
+
+async def test_empty_presence_list_unassigned_still_dials_registered_agents(
+    settings, log_port, registry
+):
+    log_port.get_conversation_assignee.return_value = None
+    registry.registered_ids.return_value = {1, 7}
+    r = _with_presence(settings, log_port, registry, _presence())
+    target = await r.resolve()
+    assert target.kind == "clients"
+    assert sorted(target.value.split(",")) == ["agent_1", "agent_7"]
+
+
+async def test_busy_assignee_and_nobody_else_online_resolves_none(settings, log_port, registry):
+    log_port.get_conversation_assignee.return_value = "7"
+    registry.registered_ids.return_value = {7}
+    r = _with_presence(settings, log_port, registry, _presence(_Agent(7, "busy")))
+    assert await r.resolve() is None
+
+
+async def test_prefetched_answer_is_rechecked_against_presence_at_resolve(
+    settings, log_port, registry
+):
+    log_port.get_conversation_assignee.return_value = "7"
+    registry.registered_ids.return_value = {1, 7}
+    presence = _presence(_Agent(1), _Agent(7))
+    r = _with_presence(settings, log_port, registry, presence)
+    await r.prefetch()
+    assert (await r.resolve()).kind == "client"
+    presence.fetch_agents.return_value = [_Agent(1), _Agent(7, "busy")]
+    assert await r.resolve() == HandoffTarget(kind="clients", value="agent_1")
+
+
+async def test_warm_resolve_reads_presence_once_and_nothing_else(settings, log_port, registry):
+    log_port.get_conversation_assignee.return_value = "7"
+    registry.registered_ids.return_value = {1, 7}
+    presence = _presence(_Agent(1), _Agent(7, "busy"))
+    r = _with_presence(settings, log_port, registry, presence)
+    await r.prefetch()
+    assert presence.fetch_agents.await_count == 1  # prefetch: one read
+    for m in (presence.fetch_agents, registry.registered_ids, log_port.get_conversation_assignee):
+        m.reset_mock()
+    assert await r.resolve() == HandoffTarget(kind="clients", value="agent_1")
+    assert presence.fetch_agents.await_count == 1
+    assert registry.registered_ids.await_count == 0
+    assert log_port.get_conversation_assignee.await_count == 0
+
+
+async def test_cold_resolve_reads_presence_once_even_when_fanning_out(
+    settings, log_port, registry
+):
+    log_port.get_conversation_assignee.return_value = "7"
+    registry.registered_ids.return_value = {1, 7}
+    presence = _presence(_Agent(1), _Agent(7, "offline"))
+    r = _with_presence(settings, log_port, registry, presence)
+    await r.resolve()
+    assert presence.fetch_agents.await_count == 1
+    assert registry.registered_ids.await_count == 1
+
+
+async def test_live_presence_failure_on_warm_path_uses_the_warm_target(
+    settings, log_port, registry
+):
+    log_port.get_conversation_assignee.return_value = "7"
+    registry.registered_ids.return_value = {7}
+    presence = _presence(_Agent(7))
+    r = _with_presence(settings, log_port, registry, presence)
+    await r.prefetch()
+    presence.fetch_agents.side_effect = RuntimeError("boom")
+    # The raise is treated as unknown presence -> assignee rung; and a hard
+    # failure inside the decision falls back to the warm target, never None.
+    assert await r.resolve() == HandoffTarget(kind="client", value="agent_7")

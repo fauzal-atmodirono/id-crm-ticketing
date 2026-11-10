@@ -4,8 +4,10 @@ The phone line looks the caller up before the greeting (task 1,
 `features/chat/phone/caller_context.py`). The chat bot (the `agent/`
 service answering WhatsApp / API-inbox messages) should know the same, and
 no more: first name, car model(s), plate last 4, usual dealer, open case
-count. Never the phone number, the surname or a full plate (Malaysia PDPA):
-the bot CONFIRMS ("is this Ahmad? about your X50?"), it does not recite.
+count. Never the phone number, the surname or a full plate (Malaysia PDPA).
+Since R47 (brief 6) the bot is personal with what we have (greets by first
+name, never re-asks name/number/car/dealer) and serves an unrecognised number
+as a new customer; the wording is shared with the phone in ``personal.py``.
 
 `POST /agent/contact-context` with JSON ``{"phone": "..."}`` (a body, so the
 number never sits in a URL, an access log or httpx's request log) reuses
@@ -44,6 +46,11 @@ from chatbot.features.chat.phone.caller_context import (
     normalise_mobile,
 )
 from chatbot.features.chat.phone.rate_limit import RateLimiter
+from chatbot.features.contact_context.personal import (
+    recognised_paragraph,
+    shared_paragraph,
+    unknown_paragraph,
+)
 
 if TYPE_CHECKING:
     from chatbot.platform.config import Settings
@@ -99,58 +106,26 @@ def contact_view(ctx: CallerContext | None) -> dict[str, Any]:
     }
 
 
-def _car(v: dict[str, str]) -> str:
-    model = v.get("model") or "car"
-    ending = v.get("plate_ending")
-    return f"{model} (plate ending {ending})" if ending else model
-
-
-_PRIVACY = (
-    "PRIVACY: never write the customer's phone number, surname, full plate number, "
-    "address or any other personal detail from our records. You may confirm what the "
-    "customer tells you, and ask a confirming question using only a first name and a "
-    "car model. If the customer says this is not them, treat them as a new customer."
-)
-
-
 def chat_context_instruction(view: dict[str, Any]) -> str:
-    """The prompt paragraph for the chat bot; "" when nothing is known."""
+    """The prompt paragraph for the chat bot (R47 wording, shared with the
+    phone in personal.py): personal for a recognised customer, "ask, never
+    list" for a shared number, "serve as a new customer" for no match."""
     customers = view.get("customers") or []
     if not customers:
-        return ""
-    head = "CUSTOMER CONTEXT (from our CRM records, not written by the customer): "
+        return unknown_paragraph(channel="chat")
     if len(customers) > 1:
-        return (
-            head + "this phone number is shared by several customers. Do not guess who this "
-            "is and do not list names: if it matters, ask for their name and which car "
-            "the message is about. " + _PRIVACY
-        )
+        return shared_paragraph([], channel="chat")
     c = customers[0]
-    facts = []
-    if c.get("first_name"):
-        facts.append(f"first name {c['first_name']}")
-    cars = c.get("vehicles") or []
-    if len(cars) == 1:
-        facts.append(f"car {_car(cars[0])}")
-    elif cars:
-        facts.append("cars on file: " + "; ".join(_car(v) for v in cars))
-    if c.get("usual_dealer"):
-        facts.append(f"usual dealer {c['usual_dealer']}")
-    if c.get("open_cases"):
-        facts.append(f"{c['open_cases']} open case(s)")
-    if not facts:
+    extra = [f"{c['open_cases']} open case(s)"] if c.get("open_cases") else []
+    return recognised_paragraph(c, channel="chat", extra_facts=extra)
+
+
+def instruction_for(ctx: CallerContext | None) -> str:
+    """The paragraph for a lookup result; "" when the lookup itself failed
+    (we do not know -- not "a new customer")."""
+    if ctx is None or ctx.failed:
         return ""
-    confirm = (
-        "If you have not already confirmed it in this conversation, confirm once, "
-        "naturally and in one sentence, who you are talking to"
-    )
-    confirm += " and which car the message is about. " if cars else ". "
-    which = (
-        "They have more than one car: ask which one (you may name the models, never the plates). "
-        if len(cars) > 1
-        else ""
-    )
-    return head + "this customer matches " + ", ".join(facts) + ". " + confirm + which + _PRIVACY
+    return chat_context_instruction(contact_view(ctx))
 
 
 def build_contact_context_router(settings: Settings, lookup: Lookup) -> APIRouter:
@@ -185,7 +160,6 @@ def build_contact_context_router(settings: Settings, lookup: Lookup) -> APIRoute
                 "chat_contact_context_failed", phone=mask(number), error_type=type(e).__name__
             )
             ctx = None
-        view = contact_view(ctx)
-        return {"view": view, "instruction": chat_context_instruction(view)}
+        return {"view": contact_view(ctx), "instruction": instruction_for(ctx)}
 
     return router

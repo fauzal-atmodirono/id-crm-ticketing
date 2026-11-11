@@ -38,7 +38,7 @@ a trip and opens the driver conversation (app or WhatsApp).
 3. As the driver, reply "sya blum bisa login". The agent re-sends the install link and the login steps instead of ticking anything.
 4. Send a photo of the plate. The `unit_photo` item turns ticked in the console.
 5. Point at the ticket list: "DO not in app" is filed to the allocation team (`alloc`), not to the generic support queue, with the order id and driver.
-6. Move LGS-24033 to its next milestone to show the ETA-versus-RAD checkpoint. Then show quiet hours: between 22:00 and 05:00 WIB a move is applied but the driver is not messaged (the response says `deferred`). Tick "Send anyway" to override.
+6. Move LGS-24033 to its next milestone to show the ETA-versus-RAD checkpoint. Then show quiet hours: between 22:00 and 05:00 WIB a move is applied but the driver is not messaged (the response says `deferred`). Tick "Force (ignore quiet hours)" to override.
 
 If Chatwoot is unreachable the move still applies and the API answers 502; with no
 driver channel configured it answers 503.

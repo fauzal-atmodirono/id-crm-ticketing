@@ -90,8 +90,8 @@ def capacity_check(items: list[dict], roster: dict, calendar: dict) -> dict:
             "committed": _num(com[t]),
             "free": _num(free),
             "proposed": proposed[t],
-            # A percentage of zero or negative free capacity is meaningless: report None.
-            "utilisation_pct": round(proposed[t] / free * 100) if free > 0 else None,
+            # Share of total capacity used once the proposal lands; None when the team has no capacity.
+            "utilisation_pct": round((com[t] + proposed[t]) / cap[t] * 100) if cap[t] > 0 else None,
             "overloaded": proposed[t] > free,
         }
     return {

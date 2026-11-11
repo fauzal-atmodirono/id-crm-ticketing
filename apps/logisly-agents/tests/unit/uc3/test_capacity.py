@@ -40,7 +40,7 @@ def test_capacity_matches_report():
         "committed": 8,
         "free": 61,
         "proposed": 30,
-        "utilisation_pct": 49,
+        "utilisation_pct": 55,
         "overloaded": False,
     }
     assert t["frontend"] == {
@@ -48,7 +48,7 @@ def test_capacity_matches_report():
         "committed": 8,
         "free": 22,
         "proposed": 7,
-        "utilisation_pct": 32,
+        "utilisation_pct": 50,
         "overloaded": False,
     }
     assert [i["sp"] for i in r["after_window"]] == [5]  # S11 Shopee SOP, Sprint 27.01
@@ -82,7 +82,7 @@ def test_leave_inside_window_is_prorated():
     assert r["teams"]["mobile"]["capacity"] == 69 - 6.5
 
 
-def test_overloaded_team_reports_none_not_zero():
+def test_overloaded_team_still_reports_utilisation():
     ctx = _ctx()
     roster = json.loads(json.dumps(ctx["roster"], default=str))
     names = [p["name"] for p in roster["people"]]
@@ -90,8 +90,32 @@ def test_overloaded_team_reports_none_not_zero():
     r = capacity_check([{"assignee": "rizky-r", "sp": 3, "sprint": "Sprint 26.23"}], roster, ctx["calendar"])
     m = r["teams"]["mobile"]
     assert m["free"] <= 0 and m["proposed"] == 3
-    assert m["utilisation_pct"] is None and m["overloaded"] is True
-    assert "overloaded" not in r["teams"]["backend"] or r["teams"]["backend"]["proposed"] == 0
+    assert m["utilisation_pct"] == round((m["committed"] + 3) / m["capacity"] * 100)
+    assert m["overloaded"] is True
+
+
+def test_zero_capacity_team_reports_none():
+    ctx = _ctx()
+    roster = json.loads(json.dumps(ctx["roster"], default=str))
+    for p in roster["people"]:
+        if p["id"] in ("rizky-r", "bayu-p"):
+            p["capacity_sp"] = 0
+    r = capacity_check([], roster, ctx["calendar"])
+    assert r["teams"]["mobile"]["utilisation_pct"] is None
+
+
+def test_report_figures_match_tool():
+    """consistency_report.md's capacity table equals what capacity_check returns for the answer key."""
+    import re
+
+    text = (get_settings().data_dir / "uc3/expected/consistency_report.md").read_text(encoding="utf-8")
+    rows = {
+        m.group(1): int(m.group(2))
+        for m in re.finditer(r"^\| (Mobile|Backend|Frontend)[^|]*\|.*\| (\d+)% \|$", text, re.M)
+    }
+    t = _run(_items())["teams"]
+    assert rows == {k.capitalize(): t[k]["utilisation_pct"] for k in ("mobile", "backend", "frontend")}
+    assert rows == {"Mobile": 4, "Backend": 55, "Frontend": 50}
 
 
 def test_unknown_sprint_is_separate_from_after_window():
@@ -112,4 +136,3 @@ def test_overloaded_when_proposed_exceeds_free():
     r = _run([{"assignee": "bayu-p", "sp": free + 1, "sprint": "Sprint 26.23"}])
     m = r["teams"]["mobile"]
     assert m["overloaded"] is True
-    assert m["utilisation_pct"] == round((free + 1) / free * 100)

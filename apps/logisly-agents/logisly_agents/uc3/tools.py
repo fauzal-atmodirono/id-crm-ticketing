@@ -218,6 +218,7 @@ def create_issue(
         epic: Kunci Epic induk, mis. LOG-3420.
     """
     try:
+        _check_assignee(assignee)
         return _jira(tool_context).create(
             issue_type,
             summary,
@@ -260,6 +261,7 @@ def update_issue(
         add_links: Link baru, tiap elemen {"type": ..., "key": ...}; dibaca "issue ini <type> <key>".
     """
     try:
+        _check_assignee(assignee)
         return _jira(tool_context).update(
             key,
             add_labels=list(add_labels or []),
@@ -338,21 +340,36 @@ def _resolve(ref: Any, temp: dict[str, str]) -> Any:
     raise TrackerError(f"temp_id tidak dikenal (belum dibuat lebih dulu di usulan ini): {ref}")
 
 
+def _resolve_links(links: Any, temp: dict[str, str]) -> list[dict]:
+    out = []
+    for ln in links or []:
+        if not isinstance(ln, dict):
+            raise TrackerError(f"link harus berupa objek {{type, key}}: {ln!r}")
+        out.append({**ln, "key": _resolve(ln.get("key"), temp)})
+    return out
+
+
+def _check_assignee(assignee: Any) -> None:
+    if not assignee:
+        return
+    ids = {p["id"] for p in _context()["roster"]["people"]}
+    if assignee not in ids:
+        raise TrackerError(f"assignee tidak ada di roster: {assignee!r}; pilihan {sorted(ids)}")
+
+
 def _run_item(jira: MockJira, kind: str, args: dict, temp: dict[str, str]) -> dict:
     """Apply one proposal item to ``jira``. The same code runs for the dry run and the real apply.
 
     ``temp`` maps temp_id -> created key; a successful create registers its own temp_id in it.
     """
     args = _check_item(kind, args)
+    if kind in ("create", "update"):
+        _check_assignee(args.get("assignee"))
     if kind == "create":
         tid = args.get("temp_id")
         if tid and (tid in temp or _ISSUE_KEY_RE.match(str(tid))):
             raise TrackerError(f"temp_id tidak valid atau dipakai ganda: {tid}")
-        links = [
-            {**ln, "key": _resolve(ln.get("key"), temp)}
-            for ln in args.get("links") or []
-            if isinstance(ln, dict)
-        ]
+        links = _resolve_links(args.get("links"), temp)
         out = jira.create(
             args["type"],
             args["summary"],
@@ -370,11 +387,7 @@ def _run_item(jira: MockJira, kind: str, args: dict, temp: dict[str, str]) -> di
             temp[tid] = out["key"]
         return out
     if kind == "update":
-        links = [
-            {**ln, "key": _resolve(ln.get("key"), temp)}
-            for ln in args.get("add_links") or []
-            if isinstance(ln, dict)
-        ]
+        links = _resolve_links(args.get("add_links"), temp)
         out = jira.update(
             args["key"],
             add_labels=list(args.get("add_labels") or []),
@@ -518,6 +531,7 @@ def apply_proposal(tool_context: ToolContext, ids: list[str] | None = None) -> d
             if item["applied"] and tid and (item.get("result") or {}).get("key"):
                 temp[tid] = item["result"]["key"]
         results: list[dict] = []
+        errors: list[dict] = []
         applied = failed = already = 0
         for item in items:
             if wanted and item["id"] not in wanted:
@@ -530,7 +544,9 @@ def apply_proposal(tool_context: ToolContext, ids: list[str] | None = None) -> d
                 out = _run_item(jira, item["kind"], item["args"], temp)
             except Exception as exc:  # noqa: BLE001 - every item failure is reported, not raised
                 failed += 1
-                results.append({"id": item["id"], "status": "error", "error": str(exc) or type(exc).__name__})
+                err = {"id": item["id"], "status": "error", "error": str(exc) or type(exc).__name__}
+                results.append(err)
+                errors.append(err)
                 continue
             item["applied"] = True
             item["result"] = {"key": out["key"]}
@@ -541,8 +557,16 @@ def apply_proposal(tool_context: ToolContext, ids: list[str] | None = None) -> d
         for pid in wanted:
             if pid not in known:
                 failed += 1
-                results.append({"id": pid, "status": "error", "error": f"usulan {pid} tidak ada"})
+                err = {"id": pid, "status": "error", "error": f"usulan {pid} tidak ada"}
+                results.append(err)
+                errors.append(err)
         tool_context.state[PROPOSAL_KEY] = {"items": items}
-        return {"applied": applied, "failed": failed, "already_applied": already, "results": results}
+        return {
+            "applied": applied,
+            "failed": failed,
+            "already_applied": already,
+            "errors": errors,
+            "results": results,
+        }
     except Exception as exc:
         return {"error": f"Gagal menerapkan usulan: {str(exc) or type(exc).__name__}"}

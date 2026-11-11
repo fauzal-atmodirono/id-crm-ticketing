@@ -310,3 +310,49 @@ def test_answer_key_is_a_valid_proposal():
     assert j.get("LOG-3417")["resolution"] == "Duplicate"
     stories = [i for i in j.search(issue_type="Story", label="uc1-milestone") if i["key"] >= "LOG-3421"]
     assert len(stories) == 11
+
+
+def test_unknown_assignee_is_error_item():
+    res = tools.propose_changes(
+        _ctx(),
+        creates=[_story("[BE] As CT, I want a so that a", assignee="Rizky")],
+        updates=[{"key": "LOG-3412", "assignee": "Rizky"}, {"key": "LOG-3412", "assignee": "rizky-r"}],
+        transitions=[],
+    )
+    assert [i["status"] for i in res["items"]] == ["error", "error", "ok"]
+    assert "roster" in res["items"][0]["error"]
+    assert "error" in tools.create_issue(
+        _ctx(),
+        "Story",
+        "[BE] As CT, I want z so that z",
+        "d",
+        ["a"],
+        ["Platform"],
+        story_points=3,
+        assignee="x",
+    )
+    assert "error" in tools.update_issue(_ctx(), "LOG-3412", assignee="x")
+
+
+def test_non_dict_links_are_error_items():
+    res = tools.propose_changes(
+        _ctx(),
+        creates=[_story("[BE] As CT, I want a so that a", links=["LOG-3405"])],
+        updates=[{"key": "LOG-3412", "add_links": ["LOG-3405"]}],
+        transitions=[],
+    )
+    assert [i["status"] for i in res["items"]] == ["error", "error"]
+    assert "link" in res["items"][0]["error"]
+
+
+def test_apply_reports_errors_list():
+    ctx = _ctx()
+    tools.propose_changes(
+        ctx,
+        creates=[_story("[BE] As CT, I want a so that a", components=["Nope"])],
+        updates=[],
+        transitions=[],
+    )
+    res = tools.apply_proposal(ctx, ids=["P1", "P9"])
+    assert res["failed"] == 2 and [e["id"] for e in res["errors"]] == ["P1", "P9"]
+    assert tools.apply_proposal(_ctx()).get("error")

@@ -1,6 +1,8 @@
-import os
 from types import SimpleNamespace
 
+import pytest
+
+from chatbot.features.chat import service as chat_service
 from chatbot.features.chat.agents import build_ai_agent
 from chatbot.features.chat.prompts import (
     AGENT_INSTRUCTION,
@@ -81,21 +83,22 @@ def test_logisly_prompt_has_checklist_rules():
     assert "overlay" in LOGISLY_MEDIA_INSTRUCTION
 
 
-def _logisly_tools():
-    os.environ.setdefault("GOOGLE_API_KEY", "test-key")
-    settings = Settings()
-    agent = build_ai_agent(settings, None, None, persona="logisly")
+@pytest.fixture
+def logisly_tools(monkeypatch):
+    # monkeypatch undoes the env change after each test, so no leakage.
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    agent = build_ai_agent(Settings(), None, None, persona="logisly")
     return {t.__name__: t for t in agent.tools}, agent
 
 
-def test_logisly_tools_include_record_checklist():
-    tools, agent = _logisly_tools()
+def test_logisly_tools_include_record_checklist(logisly_tools):
+    tools, agent = logisly_tools
     assert "record_checklist_tool" in tools
     assert agent.tools[0].__name__ == "record_checklist_tool"
 
 
-async def test_record_checklist_tool_records_and_queues_ticket():
-    tools, _ = _logisly_tools()
+async def test_record_checklist_tool_records_and_queues_ticket(logisly_tools):
+    tools, _ = logisly_tools
     trip = TRIPS.get("LGS-24017")
     ms = "at_pickup"
     item = next(i for i in milestones.CHECKLISTS[ms] if i.team)
@@ -115,3 +118,47 @@ async def test_record_checklist_tool_records_and_queues_ticket():
         ACTIVE_SESSIONS.pop("crm-777", None)
         del milestones.PENDING_TICKETS[before:]
         trip.get("checklists", {}).pop(ms, None)
+
+
+def _hook_service(monkeypatch, persona):
+    calls = {"tickets": 0, "notes": []}
+
+    async def fake_tickets(*_a, **_k):
+        calls["tickets"] += 1
+        return 0
+
+    async def fake_note(_settings, session_id, order_id, milestone, **_k):
+        calls["notes"].append((session_id, order_id, milestone))
+        return True
+
+    monkeypatch.setattr(chat_service, "file_checklist_tickets", fake_tickets)
+    monkeypatch.setattr(chat_service, "note_checklist_complete", fake_note)
+    svc = chat_service.OrchestratorService.__new__(chat_service.OrchestratorService)
+    svc._settings = SimpleNamespace(agent_persona=persona)
+    return svc, calls
+
+
+async def test_after_turn_hook_is_a_noop_for_proton(monkeypatch):
+    svc, calls = _hook_service(monkeypatch, "proton")
+    await svc._after_logisly_turn("crm-1")
+    assert calls == {"tickets": 0, "notes": []}
+
+
+async def test_after_turn_hook_without_session_entry_only_files_tickets(monkeypatch):
+    svc, calls = _hook_service(monkeypatch, "logisly")
+    await svc._after_logisly_turn("crm-nope")
+    assert calls == {"tickets": 1, "notes": []}
+
+
+async def test_after_turn_hook_notes_a_complete_checklist(monkeypatch):
+    svc, calls = _hook_service(monkeypatch, "logisly")
+    monkeypatch.setitem(
+        ACTIVE_SESSIONS, "crm-2", {"order_id": "LGS-24017", "milestone": "at_pickup"}
+    )
+    monkeypatch.setattr(milestones, "is_complete", lambda *_a: True)
+    await svc._after_logisly_turn("crm-2")
+    assert calls == {"tickets": 1, "notes": [("crm-2", "LGS-24017", "at_pickup")]}
+    monkeypatch.setattr(milestones, "is_complete", lambda *_a: False)
+    calls["notes"].clear()
+    await svc._after_logisly_turn("crm-2")
+    assert calls["notes"] == []

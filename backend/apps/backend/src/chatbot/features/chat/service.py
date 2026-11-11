@@ -49,8 +49,13 @@ from chatbot.features.chat.prompts import (
     build_agent_instruction,
     instructions_for_persona,
 )
-from chatbot.features.logisly.escalation import file_escalation
-from chatbot.features.logisly.trips import context_for_session
+from chatbot.features.logisly import milestones as logisly_milestones
+from chatbot.features.logisly.escalation import (
+    file_checklist_tickets,
+    file_escalation,
+    note_checklist_complete,
+)
+from chatbot.features.logisly.trips import ACTIVE_SESSIONS, TRIPS, context_for_session
 from chatbot.features.metrics.events import build_turn_event
 from chatbot.features.metrics.mapping import CATEGORY_TO_DIVISION
 from chatbot.platform.metered_genai import (
@@ -357,6 +362,25 @@ class OrchestratorService:
             await file_escalation(self._settings, session_id, dict(session_state))
         except Exception as e:
             _log.warning("logisly_escalation_hook_failed", session_id=session_id, error=str(e))
+
+    async def _after_logisly_turn(self, session_id: str) -> None:
+        """Logisly persona only: after each turn file the routed tickets the
+        agent's checklist ticks queued, and note a completed checklist once.
+        Whole body fail-open: it must never change the driver's reply."""
+        if getattr(getattr(self, "_settings", None), "agent_persona", "proton") != "logisly":
+            return
+        try:
+            await file_checklist_tickets(self._settings, session_id)
+            entry = ACTIVE_SESSIONS.get(session_id)
+            if not entry or not entry.get("milestone"):
+                return
+            trip = TRIPS.get(entry["order_id"])
+            if trip is not None and logisly_milestones.is_complete(trip, entry["milestone"]):
+                await note_checklist_complete(
+                    self._settings, session_id, entry["order_id"], entry["milestone"]
+                )
+        except Exception as e:
+            _log.warning("logisly_after_turn_failed", session_id=session_id, error=str(e))
 
     def _with_trip_context(self, session_id: str, instruction: str) -> str:
         """Logisly persona only: append the trip a tracking alert opened this
@@ -881,6 +905,9 @@ class OrchestratorService:
                 await self._append_history_message(
                     session_id, updated_session, state_history, "assistant", reply_text
                 )
+
+        if session_id.startswith("crm-"):
+            await self._after_logisly_turn(session_id)
 
         products = _cards_from_state(session_state.get("product_carousel", []) or [])
         if products:

@@ -12,7 +12,8 @@ from chatbot.features.chat.case_taxonomy import build_case_taxonomy
 from chatbot.features.chat.option_lists import build_option_list
 from chatbot.features.chat.product_cleanup import clean_description, clean_title, dedupe_cards
 from chatbot.features.chat.prompts import SUMMARIZER_INSTRUCTION, instructions_for_persona
-from chatbot.features.logisly.trips import TRIPS
+from chatbot.features.logisly import milestones as logisly_milestones
+from chatbot.features.logisly.trips import ACTIVE_SESSIONS, TRIPS
 from chatbot.features.logisly.trips import describe as describe_trip
 
 if TYPE_CHECKING:
@@ -356,8 +357,47 @@ def build_ai_agent(  # noqa: PLR0915 — one builder, many tool closures
         tool_context.state["handoff_summary"] = summary
         return f"[internal] escalated to operations (Reason: {reason})."
 
+    async def record_checklist_tool(
+        tool_context: ToolContext,
+        order_id: str,
+        item_id: str,
+        ok: bool,
+        value: str,
+        source: str = "driver",
+    ) -> str:
+        """Tick one item of the milestone checklist from what the driver said or showed.
+
+        Call once per item a reply answers (several calls per reply is normal).
+
+        Args:
+            tool_context: Context injected by the ADK runner.
+            order_id: The order number, e.g. LGS-24017.
+            item_id: The checklist item id exactly as listed in the trip context.
+            ok: True when the item is fine, False when it is wrong or missing.
+            value: What was seen or said (e.g. the plate read from a photo overlay,
+                the load weight); empty when there is nothing to add.
+            source: "driver" for text or voice, "photo" when read from a photo.
+        """
+        trip = TRIPS.get(order_id)
+        if trip is None:
+            return f"NOT_FOUND: no trip with order number {order_id}."
+        try:
+            session_id = tool_context.session.id
+        except Exception:
+            session_id = tool_context.state.get("session_id")
+        milestone = trip.get("milestone") or ""
+        registered = ACTIVE_SESSIONS.get(session_id or "", {}).get("milestone")
+        if registered and registered != milestone:
+            milestone = registered
+        tool_context.state["order_id"] = trip["order_id"]
+        result = logisly_milestones.record_item(
+            trip, milestone, item_id, ok, value, source, session_id
+        )
+        return f"[internal] {result}"
+
     if persona == "logisly":
         tools = [
+            record_checklist_tool,
             get_trip_tool,
             update_trip_status_tool,
             classify_ticket_tool,

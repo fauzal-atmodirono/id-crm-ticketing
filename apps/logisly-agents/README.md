@@ -85,6 +85,7 @@ The deploy never registers anything. Do this once per agent in the Gemini Enterp
 
    Pick the authentication option the registration form offers for calling a private Cloud Run service with that identity.
 4. Smoke test before the demo: send the UC3 first turn (four files plus the prompt) through Gemini Enterprise and time it. That turn reads every source, searches the tracker, writes the PRD and checks capacity, and takes minutes locally. If Gemini Enterprise times out the A2A call before the answer arrives, split the turn (upload first, then ask for the PRD, then the backlog). Streaming is not enabled on purpose; do not turn it on for this demo.
+   Pre-demo checklist: smoke-test `publish_prd` once on the deployed service. Expect a Doc link; "unavailable" means a problem with the folder id, the Drive API, Shared Drive membership of the runtime service account, or the OAuth scope. Not yet verified.
 5. Share the agent with the demo users, then run the demo scripts below.
 
 ## Environment variables
@@ -96,6 +97,7 @@ The deploy never registers anything. Do this once per agent in the Gemini Enterp
 | `PORT` | `8080` | Port for uvicorn (Cloud Run sets it) |
 | `LOGISLY_MODEL` | `gemini-3.5-flash` | Gemini model; works only at location `global` |
 | `LOGISLY_AS_OF` | `2026-11-09` | Demo "today" |
+| `LOGISLY_UC3_AS_OF` | `2026-11-10` | UC3 demo "today" (UC2 keeps `LOGISLY_AS_OF`) |
 | `LOGISLY_PRD_FOLDER_ID` | empty | UC3: Shared Drive folder for the PRD Google Doc; empty keeps the PRD in chat |
 | `LOGISLY_REQUIRE_CONFIRMATION` | `false` | Ask for tool confirmation before writes |
 | `LOGISLY_DATA_DIR` | bundled `logisly_agents/data/`, else `demo-data/logisly` | Demo data root |
@@ -141,6 +143,7 @@ Expected: LOG-3417 duplikat LOG-3412 (jadi Won't Do), LOG-3398 diberi komentar s
 
 - Set `LOGISLY_PRD_FOLDER_ID` ke ID folder di Shared Drive. Service account runtime Cloud Run harus anggota Shared Drive itu (peran Content manager) dan Drive API aktif di project. Saat deploy: `LOGISLY_PRD_FOLDER_ID=<id> just deploy uc3` (deploy.sh meneruskannya hanya bila diisi).
 - Run lokal: `gcloud auth application-default login --scopes=https://www.googleapis.com/auth/drive,https://www.googleapis.com/auth/cloud-platform`.
+- Doc dimiliki service account runtime, jadi orang yang membuka Doc saat demo harus anggota Shared Drive itu; tanpa keanggotaan, link Doc akan ditolak (access denied).
 - Tanpa folder (atau bila Drive menolak), PRD tetap disimpan dan ditampilkan di chat, dan agen menyebut bahwa Doc tidak tersedia.
 
 ## Known risks

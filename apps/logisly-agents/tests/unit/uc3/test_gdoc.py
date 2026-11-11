@@ -30,8 +30,10 @@ class FakeSession:
         self.patch_status = None  # overrides status for PATCH calls when set
         self.calls = []
 
-    def request(self, method, url, data=None, headers=None, **kw):
-        self.calls.append({"method": method, "url": url, "data": data, "headers": headers})
+    def request(self, method, url, data=None, headers=None, timeout=None, **kw):
+        self.calls.append(
+            {"method": method, "url": url, "data": data, "headers": headers, "timeout": timeout}
+        )
         if method == "PATCH" and self.patch_status:
             return FakeResp(self.patch_status)
         if method == "POST" and getattr(self, "new_id", None):

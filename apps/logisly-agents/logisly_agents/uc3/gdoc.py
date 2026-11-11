@@ -77,7 +77,7 @@ def publish(name, markdown, folder_id, file_id=None, session=None) -> dict:
         }
     data, ctype = _multipart(meta, html)
     session = session or _default_session()
-    resp = session.request(method, url, data=data, headers={"Content-Type": ctype})
+    resp = session.request(method, url, data=data, headers={"Content-Type": ctype}, timeout=30)
     if not 200 <= resp.status_code < 300:
         raise DriveError(resp.status_code)
     body = resp.json()

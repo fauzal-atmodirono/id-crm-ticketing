@@ -114,6 +114,7 @@ def test_source_dates_planted():
 
 
 def test_old_data_removed():
+    # split literal keeps `rg -i github` over uc3 clean
     assert not (UC3 / ("git" + "hub")).exists()
     assert not (UC3 / "expected" / "prd_driver-app-ai-assistant.md").exists()
 

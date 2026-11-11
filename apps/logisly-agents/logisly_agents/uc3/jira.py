@@ -44,7 +44,7 @@ class MockJira:
         as_of: date | None = None,
     ):
         self.state = state
-        self.today = (as_of or get_settings().as_of).isoformat()
+        self.today = (as_of or get_settings().uc3_as_of).isoformat()
         self.project = conventions["project"]["key"]
         self.issue_types = list(conventions["issue_types"])
         self.statuses = list(conventions["statuses"])

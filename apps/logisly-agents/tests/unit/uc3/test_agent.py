@@ -60,10 +60,8 @@ def test_adk_entry_imports():
 
 
 def test_instruction_carries_demo_date_and_proposal_flow():
-    from datetime import date
-
-    agent = build_uc3_agent(Settings(as_of=date(2026, 11, 9)))
-    assert "Tanggal hari ini: 09-11-2026 (gunakan tanggal ini, bukan tanggal sistem)." in agent.instruction
+    agent = build_uc3_agent(Settings())
+    assert "Tanggal hari ini: 10-11-2026 (gunakan tanggal ini, bukan tanggal sistem)." in agent.instruction
     assert "propose_changes" in agent.instruction and "apply_proposal" in agent.instruction
     assert "—" not in agent.instruction
 
@@ -72,5 +70,15 @@ def test_instruction_jira_and_publish():
     from logisly_agents.uc3.agent import INSTRUCTION
 
     assert "Jira" in INSTRUCTION and "publish_prd" in INSTRUCTION
+    # split literal keeps `rg -i github` over uc3 clean
     assert ("Git" + "Hub") not in INSTRUCTION and "close_issue" not in INSTRUCTION
     assert "close_issue" not in _tools(build_uc3_agent(Settings()))
+
+
+def test_instruction_final_review_rules():
+    from logisly_agents.uc3.agent import INSTRUCTION
+
+    assert "rencana uji pilot" not in INSTRUCTION
+    assert INSTRUCTION.count("prd_uc1-milestone-checklist") >= 2
+    assert "<br>" in INSTRUCTION
+    assert "Sprint 26.23" in INSTRUCTION and "rizky-r" in INSTRUCTION

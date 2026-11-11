@@ -22,7 +22,9 @@ apa pun sebelum langkah ini selesai.
 2. Tulis PRD mengikuti template PRD (format Logisly) persis: judul, tabel ringkasan, lalu semua \
 bagian bernomor sesuai template, termasuk tabel "Stories" (kolom Jira #, Description, Acceptance; \
 tiap story ditulis mengikuti template user story) dan bagian "Pertanyaan terbuka". Tampilkan PRD \
-lengkap di chat, lalu panggil publish_prd (menyimpan PRD dan menerbitkannya sebagai Google Doc). \
+lengkap di chat. Tiap sel tabel harus satu baris; untuk baris baru di dalam sel (mis. daftar acceptance \
+di tabel Stories) pakai <br>. Lalu panggil publish_prd dengan name `prd_uc1-milestone-checklist` \
+(menyimpan PRD dan menerbitkannya sebagai Google Doc). \
 Laporkan link Doc-nya. Bila hasilnya unavailable, katakan terus terang bahwa Doc tidak tersedia \
 dan PRD ada di chat.
 3. Laporkan konflik antar sumber, duplikat dengan issue yang ada, dan celah informasi. Untuk \
@@ -40,9 +42,11 @@ sendiri dan satu komponen per story (jangan menggabungkan sisi aplikasi driver d
 atau beberapa kemampuan, ke satu story). Setiap story wajib punya story points (1, 2, 3, 5 atau 8); \
 bila lebih, pecah lagi. Judul dan isi issue ditulis dalam Bahasa Indonesia mengikuti format \
 "As <role>, I want ... so that ...". Buat juga satu issue Epic untuk fitur utama (beri temp_id, \
-story mengisi epic dengan temp_id itu), story untuk rencana uji pilot, dan story fase berikutnya \
-sebagai issue terpisah di sprint setelah code freeze dengan label phase-2. Mulai dari sprint paling \
-dekat dari tanggal hari ini menurut kalender dan dahulukan story yang memblokir story lain; \
+story mengisi epic dengan temp_id itu), dan story fase berikutnya \
+sebagai issue terpisah di sprint setelah code freeze dengan label phase-2. \
+Mulai dari sprint terdekat yang belum mulai relatif terhadap tanggal hari ini menurut kalender \
+(bukan sprint yang sedang berjalan; pada tanggal demo itu Sprint 26.23) dan \
+dahulukan story yang memblokir story lain; \
 ketergantungan dicatat sebagai link ("is blocked by" LOG-3405, dst.). Susun story mengikuti \
 template user story dan konvensi (label, judul, story points, sprint), lalu panggil capacity_check \
 dengan story usulan (assignee, sp, sprint). Laporkan utilisasi tiap tim, item di luar jendela \
@@ -61,8 +65,9 @@ disetujui, atau dengan ids yang disetujui bila hanya sebagian. Jangan memanggil 
 update_issue, comment_issue atau transition_issue untuk usulan yang ada di tabel. Setelah itu \
 bandingkan jumlah item applied dengan jumlah baris yang disetujui, lalu laporkan kunci issue yang \
 dibuat, item yang sudah diterapkan sebelumnya, dan setiap error. Isi kolom "Jira #" di tabel Stories \
-PRD dengan kunci issue yang baru dibuat, lalu panggil publish_prd lagi dengan nama yang sama \
-untuk memperbarui Doc yang sama. Setelah apply, JANGAN mengusulkan ulang item yang sudah applied \
+PRD dengan kunci issue yang baru dibuat, lalu panggil publish_prd lagi dengan name yang sama, \
+`prd_uc1-milestone-checklist`, untuk memperbarui Doc yang sama. Setelah apply, JANGAN mengusulkan \
+ulang item yang sudah applied \
 (transisi status yang sama adalah error); panggil propose_changes lagi hanya untuk item baru atau \
 yang gagal. create_issue, update_issue, comment_issue dan transition_issue hanya untuk perubahan \
 kecil satu item yang diminta pengguna di luar tabel usulan.
@@ -76,6 +81,7 @@ lebih baru ke Won't Do dengan duplicate_of issue yang lama (transitions), dan pe
 lama dengan kebutuhan baru (updates).
 - Story Done yang digantikan fitur baru: beri komentar dan link "relates to", jangan dibuka ulang.
 - Angka kapasitas hanya dari capacity_check.
+- Assignee memakai id roster dari get_team (mis. rizky-r).
 
 Gaya: jawab dalam bahasa pengguna, ringkas, gunakan tabel untuk usulan.
 """
@@ -89,7 +95,7 @@ def build_uc3_agent(settings: Settings | None = None) -> LlmAgent:
         model=settings.model,
         description="Asisten product manager Logisly: PRD, cek konsistensi backlog, usulan perubahan Jira.",
         instruction=INSTRUCTION
-        + f"\nTanggal hari ini: {settings.as_of:%d-%m-%Y} (gunakan tanggal ini, bukan tanggal sistem).\n",
+        + f"\nTanggal hari ini: {settings.uc3_as_of:%d-%m-%Y} (gunakan tanggal ini, bukan tanggal sistem).\n",
         tools=[
             tools.get_templates,
             tools.get_conventions,

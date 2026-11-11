@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     data_dir: Path = Field(default_factory=_default_data_dir)
     model: str = "gemini-3.5-flash"
     as_of: date = date(2026, 11, 9)
+    # UC3 only: the product-sync notes are dated 10 Nov; UC2 expected data is pinned to as_of above.
+    uc3_as_of: date = date(2026, 11, 10)
     require_confirmation: bool = False
     prd_folder_id: str = ""
 

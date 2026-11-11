@@ -55,9 +55,9 @@ SKILLS = {
         "name": "PRD dan backlog produk",
         "description": (
             "Mengubah permintaan, notulen, email dan chat menjadi PRD, memeriksa konflik dan duplikat "
-            "di backlog GitHub, mengecek kapasitas tim, dan mengusulkan perubahan issue."
+            "di backlog Jira, mengecek kapasitas tim, dan mengusulkan perubahan issue."
         ),
-        "tags": ["product", "prd", "backlog", "github"],
+        "tags": ["product", "prd", "backlog", "jira"],
     },
 }
 

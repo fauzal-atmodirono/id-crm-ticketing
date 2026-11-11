@@ -6,7 +6,8 @@ that conversation by then (and it is still the trip's latest alert), the
 agent calls the driver app. `watch_call` then gives the call the ring time
 plus a margin to connect; a call that never reaches the media stream was
 declined or not answered, so the trip is marked and operations get a
-pre-filled `driver_unreachable` ticket with the conversation reopened.
+pre-filled `driver_unreachable` ticket with the conversation reopened. No
+call is placed during quiet hours (22:00-05:00 WIB, `milestones.is_quiet`).
 
 Tasks run in the backend process (the demo state is in memory too) and are
 kept referenced so they are not garbage-collected mid-wait.
@@ -16,11 +17,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import httpx
 import structlog
 
+from chatbot.features.logisly import milestones
 from chatbot.features.logisly import trips as trips_module
 from chatbot.features.logisly.escalation import file_escalation
 
@@ -34,6 +37,10 @@ RING_SECONDS = 25
 CONNECT_MARGIN_SECONDS = 15
 
 _TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 StartCall = Callable[["Settings", str], Awaitable[str]]
 
@@ -78,9 +85,13 @@ async def watch_call(
         trips_module.TRIPS.update(
             order_id, "alert:no_answer", "Driver tidak mengangkat telepon otomatis"
         )
-    label = trips_module.ANOMALIES.get(active.get("anomaly", ""), {}).get("label", "alert")
+    if active.get("milestone"):
+        topic = f"checklist milestone '{trips_module.milestone_label(active['milestone'])}'"
+    else:
+        label = trips_module.ANOMALIES.get(active.get("anomaly", ""), {}).get("label", "alert")
+        topic = f"'{label}'"
     summary = (
-        f"Driver tidak membalas pesan Logisly tentang '{label}' dan tidak mengangkat "
+        f"Driver tidak membalas pesan Logisly tentang {topic} dan tidak mengangkat "
         "telepon otomatis. Perlu dihubungi manual oleh tim operasional."
     )
     state = {
@@ -124,6 +135,10 @@ async def run_ladder(
 ) -> None:
     await asyncio.sleep(delay_seconds)
     if not is_latest(session_id):
+        return
+    if milestones.is_quiet(_utcnow()):
+        # 22:00-05:00 WIB: no proactive contact, same rule as the opening message.
+        _log.info("logisly_ladder_quiet_hours", session_id=session_id)
         return
     try:
         messages = await channel.messages(int(session_id.removeprefix("crm-")))

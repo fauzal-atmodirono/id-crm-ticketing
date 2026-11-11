@@ -145,3 +145,30 @@ async def test_complete_note_once():
     )
     notes = [c for c in ch.calls if c[0] == "note"]
     assert len(notes) == 1 and "lengkap" in notes[0][2] and "B 9012 XY" in notes[0][2]
+
+
+async def test_milestone_conversation_files_ticket_naming_the_milestone():
+    opening = "Selamat pagi Pak Agus Wibowo, saya dari Logisly untuk order LGS-24021."
+    trips.register_session(
+        "crm-31", "LGS-24021", "milestone:at_pickup", opening, milestone="at_pickup"
+    )
+    trips.TRIPS.set_milestone("LGS-24021", "at_pickup", "gps")
+    trips.TRIPS.update("LGS-24021", "issue", "Ban pecah di gerbang.")
+    ch = _FakeChannel()
+
+    await escalation.file_escalation(None, "crm-31", _state(), channel=ch)
+
+    kind, conv, note = ch.calls[0]
+    assert (kind, conv) == ("note", 31)
+    assert "Milestone: Di lokasi muat" in note and opening in note
+    assert "Alert pelacakan" not in note
+    assert "Ban pecah di gerbang." in note and "milestone:at_pickup" not in note
+    assert ch.calls[1] == ("labels", 31, ["logisly-escalation", "cargo-issue"])
+
+
+async def test_unknown_anomaly_does_not_break_the_ticket():
+    trips.register_session("crm-32", "LGS-24017", "gone", "Halo Pak?")
+    ch = _FakeChannel()
+    await escalation.file_escalation(None, "crm-32", _state(), channel=ch)
+    assert ch.calls and ch.calls[0][0] == "note"
+    assert trips.context_for_session("crm-32")

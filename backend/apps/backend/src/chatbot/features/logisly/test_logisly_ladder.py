@@ -1,8 +1,12 @@
 import asyncio
+from datetime import UTC, datetime
 
 import pytest
 
 from chatbot.features.logisly import ladder, trips
+
+DAY = datetime(2026, 11, 11, 3, 0, tzinfo=UTC)  # 10:00 WIB
+NIGHT = datetime(2026, 11, 11, 16, 0, tzinfo=UTC)  # 23:00 WIB
 
 
 class _Channel:
@@ -31,6 +35,7 @@ def _fresh(monkeypatch):
     monkeypatch.setattr(trips, "TRIPS", trips.TripStore.seeded())
     trips.ACTIVE_SESSIONS.clear()
     trips.register_session("crm-22", "LGS-24017", "gps_stop", "Halo Pak?")
+    monkeypatch.setattr(ladder, "_utcnow", lambda: DAY)
 
 
 def _starter(log):
@@ -74,5 +79,24 @@ async def test_driver_reply_in_chat_stops_the_ladder():
 async def test_superseded_alert_does_not_call():
     trips.register_session("crm-23", "LGS-24017", "late_milestone", "Halo lagi")
     ch, rang = _Channel([]), []
+    await ladder.run_ladder(None, ch, "crm-22", _starter(rang), 0, wait_seconds=0)
+    assert rang == []
+
+
+async def test_unanswered_call_on_milestone_conversation_files_unreachable_ticket():
+    trips.register_session(
+        "crm-40", "LGS-24021", "milestone:at_pickup", "Selamat pagi Pak", milestone="at_pickup"
+    )
+    ch = _Channel()
+    await ladder.watch_call(None, ch, "crm-40", wait_seconds=0)
+    assert ("labels", 40, ["logisly-escalation", "driver-unreachable"]) in ch.calls
+    assert ch.calls[-1] == ("status", 40, "open")
+    note = ch.calls[0][2]
+    assert "Di lokasi muat" in note and "'alert'" not in note
+
+
+async def test_ladder_does_not_call_during_quiet_hours(monkeypatch):
+    monkeypatch.setattr(ladder, "_utcnow", lambda: NIGHT)
+    ch, rang = _Channel([{"message_type": 1}]), []
     await ladder.run_ladder(None, ch, "crm-22", _starter(rang), 0, wait_seconds=0)
     assert rang == []

@@ -83,13 +83,20 @@ def build_ticket_note(session_id: str, state: dict[str, Any]) -> str:
         ]
         active = trips_module.ACTIVE_SESSIONS.get(session_id)
         if active:
-            label = trips_module.ANOMALIES[active["anomaly"]]["label"]
+            # Milestone conversations register anomaly "milestone:<code>", which is
+            # not a tracking alert; name the milestone instead.
+            if active.get("milestone"):
+                trigger = f"Milestone: {trips_module.milestone_label(active['milestone'])}"
+            else:
+                anomaly = active.get("anomaly", "")
+                label = trips_module.ANOMALIES.get(anomaly, {}).get("label", anomaly or "-")
+                trigger = f"Alert pelacakan: {label}"
             lines += [
                 "",
-                f"Alert pelacakan: {label}",
-                f'Pesan pembuka ke driver: "{active["opening"]}"',
+                trigger,
+                f'Pesan pembuka ke driver: "{active.get("opening", "")}"',
             ]
-        reports = [e for e in trip["events"] if not str(e["status"]).startswith("alert:")]
+        reports = [e for e in trip["events"] if not trips_module.is_system_event(e)]
         if reports:
             lines += ["", "Laporan driver:"]
             lines += [f"• {_wib(e['at'])} WIB · {e['status']} · {e['note']}" for e in reports[-5:]]

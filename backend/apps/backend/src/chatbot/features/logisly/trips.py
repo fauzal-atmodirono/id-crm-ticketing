@@ -152,6 +152,11 @@ def milestone_label(code: str) -> str:
     return dict(milestones.MILESTONES).get(code, code)
 
 
+def is_system_event(event: dict[str, Any]) -> bool:
+    """Tracking alerts and milestone moves, as opposed to what the driver reported."""
+    return str(event["status"]).startswith(("alert:", "milestone:"))
+
+
 def describe(trip: dict[str, Any]) -> str:
     """Render a trip for the model: plain lines, no internal field names."""
     lines = [
@@ -160,7 +165,7 @@ def describe(trip: dict[str, Any]) -> str:
         f"Rute: {trip['origin']} -> {trip['destination']}",
         f"Penerima: {trip['consignee']}",
         f"Muatan: {trip['cargo']}",
-        f"Posisi terakhir: {trip['location']} ",
+        f"Posisi terakhir: {trip['location']}",
         f"Milestone: {milestone_label(trip['milestone'])}",
         f"ETA: {trip['eta']}",
         f"Status: {trip['status']}",
@@ -170,8 +175,9 @@ def describe(trip: dict[str, Any]) -> str:
         status = rec["status"] if rec else "pending"
         value = f": {rec['value']}" if rec and rec.get("value") else ""
         lines.append(f"- {item.id} ({item.source}): {status}{value}")
-    if trip["events"]:
-        last = trip["events"][-1]
+    reports = [e for e in trip["events"] if not is_system_event(e)]
+    if reports:
+        last = reports[-1]
         lines.append(f"Update terakhir dari driver: {last['note']} ({last['status']})")
     return "\n".join(lines)
 
@@ -263,7 +269,9 @@ def context_for_session(session_id: str) -> str:
             "and its checklist must be completed"
         )
     else:
-        reason = f"the tracking system raised an alert ({ANOMALIES[active['anomaly']]['label']})"
+        anomaly = active.get("anomaly", "")
+        label = ANOMALIES.get(anomaly, {}).get("label", anomaly or "unknown")
+        reason = f"the tracking system raised an alert ({label})"
     text = (
         "## This conversation\n"
         f"You started this conversation because {reason}. You already sent the driver this "

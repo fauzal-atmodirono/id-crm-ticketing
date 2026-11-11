@@ -44,3 +44,12 @@ def test_context_lists_open_items_and_answer_facts():
     assert "DTS-240210" in ctx
     assert "record_checklist_tool" in ctx
     assert "DO sudah muncul di aplikasi driver" not in ctx
+
+
+def test_describe_skips_system_events_and_has_no_trailing_space():
+    trips.TRIPS.update("LGS-24017", "on_trip", "Sudah jalan dari pool.")
+    trips.TRIPS.set_milestone("LGS-24017", "to_pickup", "gps")
+    trips.TRIPS.update("LGS-24017", "alert:gps_stop", "GPS: berhenti")
+    text = trips.describe(trips.TRIPS.get("LGS-24017"))
+    assert "Update terakhir dari driver: Sudah jalan dari pool. (on_trip)" in text
+    assert not any(line.endswith(" ") for line in text.splitlines())

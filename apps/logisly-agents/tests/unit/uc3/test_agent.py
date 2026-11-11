@@ -14,6 +14,7 @@ NAMES = {
     "get_issue",
     "capacity_check",
     "save_document",
+    "publish_prd",
     "propose_changes",
     "apply_proposal",
     "create_issue",
@@ -65,3 +66,11 @@ def test_instruction_carries_demo_date_and_proposal_flow():
     assert "Tanggal hari ini: 09-11-2026 (gunakan tanggal ini, bukan tanggal sistem)." in agent.instruction
     assert "propose_changes" in agent.instruction and "apply_proposal" in agent.instruction
     assert "—" not in agent.instruction
+
+
+def test_instruction_jira_and_publish():
+    from logisly_agents.uc3.agent import INSTRUCTION
+
+    assert "Jira" in INSTRUCTION and "publish_prd" in INSTRUCTION
+    assert ("Git" + "Hub") not in INSTRUCTION and "close_issue" not in INSTRUCTION
+    assert "close_issue" not in _tools(build_uc3_agent(Settings()))

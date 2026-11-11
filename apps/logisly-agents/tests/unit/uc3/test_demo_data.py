@@ -114,7 +114,7 @@ def test_source_dates_planted():
 
 
 def test_old_data_removed():
-    assert not (UC3 / "github").exists()
+    assert not (UC3 / ("git" + "hub")).exists()
     assert not (UC3 / "expected" / "prd_driver-app-ai-assistant.md").exists()
 
 

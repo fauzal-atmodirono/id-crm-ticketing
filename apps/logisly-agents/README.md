@@ -5,7 +5,7 @@ Google ADK demo agents for Logisly, served to Gemini Enterprise as A2A agents fr
 | Agent | ADK app | root agent | Cloud Run service |
 |---|---|---|---|
 | UC2 purchasing: tender and quotation filtering | `adk_apps/uc2_purchasing` | `logisly_purchasing` | `logisly-uc2` |
-| UC3 product manager: PRD, backlog consistency, GitHub proposals | `adk_apps/uc3_product` | `logisly_product_manager` | `logisly-uc3` |
+| UC3 product manager: PRD (Google Doc), backlog consistency, Jira proposals | `adk_apps/uc3_product` | `logisly_product_manager` | `logisly-uc3` |
 
 Demo data lives in `../../demo-data/logisly/` (see its README). Everything in it is fictional.
 
@@ -44,7 +44,7 @@ just deploy uc3
 
 The argument is positional: `just deploy agent=uc2` would pass the literal `agent=uc2` to `deploy.sh`, which rejects it.
 
-`deploy.sh <uc2|uc3>` stages the needed demo data (pricing DB, business rules, UC3 templates, GitHub conventions and snapshot, team files) into the build context as `logisly_agents/data/`, then runs `gcloud run deploy logisly-<agent> --source .` in `asia-southeast2` with `--no-allow-unauthenticated`, `--min-instances=1 --max-instances=1`. A second step sets `LOGISLY_PUBLIC_URL` to the service URL so the agent card advertises the right address. The script never changes IAM; it checks the runtime service account and prints the command to run if `roles/aiplatform.user` is missing:
+`deploy.sh <uc2|uc3>` stages the needed demo data (pricing DB, business rules, UC3 templates, Jira conventions and snapshot, team files) into the build context as `logisly_agents/data/`, then runs `gcloud run deploy logisly-<agent> --source .` in `asia-southeast2` with `--no-allow-unauthenticated`, `--min-instances=1 --max-instances=1`. A second step sets `LOGISLY_PUBLIC_URL` to the service URL so the agent card advertises the right address. The script never changes IAM; it checks the runtime service account and prints the command to run if `roles/aiplatform.user` is missing:
 
 ```bash
 gcloud projects add-iam-policy-binding lv-playground-genai \
@@ -96,6 +96,7 @@ The deploy never registers anything. Do this once per agent in the Gemini Enterp
 | `PORT` | `8080` | Port for uvicorn (Cloud Run sets it) |
 | `LOGISLY_MODEL` | `gemini-3.5-flash` | Gemini model; works only at location `global` |
 | `LOGISLY_AS_OF` | `2026-11-09` | Demo "today" |
+| `LOGISLY_PRD_FOLDER_ID` | empty | UC3: Shared Drive folder for the PRD Google Doc; empty keeps the PRD in chat |
 | `LOGISLY_REQUIRE_CONFIRMATION` | `false` | Ask for tool confirmation before writes |
 | `LOGISLY_DATA_DIR` | bundled `logisly_agents/data/`, else `demo-data/logisly` | Demo data root |
 | `GOOGLE_GENAI_USE_VERTEXAI` | `true` | Use Vertex AI with ADC |
@@ -123,14 +124,24 @@ Expected: Trans Cahaya (revisi TCL-2) di T1 sampai T3, Prima Fleet di T4. Mitra 
 
 Files are in `demo-data/logisly/uc3/sources/`.
 
-1. Unggah empat file: `01_request_driver-app-ai-assistant.docx`, `02_meeting-notes_2026-11-03_product-sync.md`, `03_email_cs_epod-request.eml`, `04_ops-chat-export_whatsapp-cost.txt`.
-2. Prompt: "Siapkan PRD AI assistant driver app dan backlog GitHub dari input minggu ini."
-3. Agen membaca template, konvensi, tim dan kalender, mencari issue yang sudah ada, lalu menulis PRD sesuai template dan menyimpannya.
+1. Unggah empat file: `01_request_milestone-follow-up.docx`, `02_meeting-notes_2026-11-10_product-sync.md`, `03_email_cs_unloading-update.eml`, `04_ops-chat-export_ct-followup.txt`.
+2. Prompt: "Siapkan PRD follow-up driver berbasis milestone dan backlog Jira dari input minggu ini."
+3. Agen membaca template, konvensi, tim dan kalender, mencari issue Jira yang sudah ada (LOG-n), lalu menulis PRD sesuai template PRD Logisly dan menerbitkannya sebagai Google Doc (link dilaporkan; tanpa folder Doc, PRD tetap di chat).
 4. Tanya lanjutan:
    - "Apa saja konflik antar sumber?"
    - "Apakah ada issue yang duplikat?"
    - "Apakah kapasitas tim cukup sebelum code freeze 18 Desember?"
-5. "Usulkan issue yang perlu dibuat atau diubah." Agen memvalidasi semua usulan lalu menampilkan tabel usulan bernomor P1, P2, dan seterusnya. Setelah tabel usulan muncul, setujui: "Setuju, terapkan semuanya ke tracker." (atau sebut id tertentu, mis. "Terapkan P1 sampai P5 saja."). Agen menerapkan usulan sekaligus dan melaporkan jumlah yang diterapkan. Perubahan hanya masuk ke tracker tiruan di sesi, bukan GitHub sungguhan.
+5. "Usulkan issue yang perlu dibuat atau diubah." Agen memvalidasi semua usulan lalu menampilkan tabel usulan bernomor P1, P2, dan seterusnya. Setelah tabel usulan muncul, setujui: "Setuju, terapkan semuanya ke tracker." (atau sebut id tertentu, mis. "Terapkan P1 sampai P5 saja."). Agen menerapkan usulan sekaligus, melaporkan jumlah yang diterapkan, mengisi kolom "Jira #" di tabel Stories PRD, dan memperbarui Doc yang sama. Perubahan hanya masuk ke Jira tiruan di sesi, bukan Jira sungguhan.
+
+Expected: LOG-3417 duplikat LOG-3412 (jadi Won't Do), LOG-3398 diberi komentar superseded tanpa dibuka ulang, release 18 Desember (bukan 4 Desember), LOG-3405 memblokir trigger milestone otomatis. Jawaban lengkap di `demo-data/logisly/uc3/expected/`.
+
+## Google Doc output (UC3)
+
+`publish_prd` mengubah PRD menjadi Google Doc lewat Drive API. Setup:
+
+- Set `LOGISLY_PRD_FOLDER_ID` ke ID folder di Shared Drive. Service account runtime Cloud Run harus anggota Shared Drive itu (peran Content manager) dan Drive API aktif di project. Saat deploy: `LOGISLY_PRD_FOLDER_ID=<id> just deploy uc3` (deploy.sh meneruskannya hanya bila diisi).
+- Run lokal: `gcloud auth application-default login --scopes=https://www.googleapis.com/auth/drive,https://www.googleapis.com/auth/cloud-platform`.
+- Tanpa folder (atau bila Drive menolak), PRD tetap disimpan dan ditampilkan di chat, dan agen menyebut bahwa Doc tidak tersedia.
 
 ## Known risks
 
@@ -139,3 +150,4 @@ Files are in `demo-data/logisly/uc3/sources/`.
 - `to_a2a` is marked experimental in ADK 2.2.0 and needs `google-adk[a2a]` plus `a2a-sdk[http-server]`.
 - The services are private. Gemini Enterprise needs `roles/run.invoker` before it can call them, and the exact principal is unconfirmed until the smoke test (see Register in Gemini Enterprise).
 - UC3 turn 1 is long. Time it during the smoke test; a Gemini Enterprise A2A timeout shorter than that turn is the main live-demo risk.
+- UC3 Google Doc: the PRD is converted from HTML by Drive, so styling is basic, and the Doc is overwritten on each `publish_prd` (edits made by hand in the Doc are lost). It needs a Shared Drive folder and a runtime service account with access; without them the PRD stays in chat. The Jira tracker is a mock held in the session, not a real Jira.

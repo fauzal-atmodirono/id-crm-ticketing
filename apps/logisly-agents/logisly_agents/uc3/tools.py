@@ -216,7 +216,14 @@ def publish_prd(tool_context: ToolContext, name: str, markdown: str) -> dict:
         prev = gdocs.get(name) or {}
         file_id = prev.get("file_id")
         try:
-            res = gdoc.publish(f"PRD - {name}", markdown, folder, file_id=file_id)
+            try:
+                res = gdoc.publish(f"PRD - {name}", markdown, folder, file_id=file_id)
+            except Exception as exc:
+                if not (file_id and getattr(exc, "status", None) == 404):
+                    raise
+                # The stored Doc was deleted or trashed: recreate once and remember the new id.
+                file_id = None
+                res = gdoc.publish(f"PRD - {name}", markdown, folder)
         except Exception as exc:
             status = getattr(exc, "status", "")
             reason = f"{type(exc).__name__}: {status}" if status else type(exc).__name__

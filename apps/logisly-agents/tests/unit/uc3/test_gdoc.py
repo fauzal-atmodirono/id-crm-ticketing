@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -26,10 +27,18 @@ class FakeResp:
 class FakeSession:
     def __init__(self, status=200):
         self.status = status
+        self.patch_status = None  # overrides status for PATCH calls when set
         self.calls = []
 
     def request(self, method, url, data=None, headers=None, **kw):
         self.calls.append({"method": method, "url": url, "data": data, "headers": headers})
+        if method == "PATCH" and self.patch_status:
+            return FakeResp(self.patch_status)
+        if method == "POST" and getattr(self, "new_id", None):
+            return FakeResp(
+                self.status,
+                {"id": self.new_id, "webViewLink": f"https://docs.google.com/document/d/{self.new_id}"},
+            )
         return FakeResp(self.status)
 
 
@@ -93,3 +102,37 @@ def test_403_unavailable_no_secrets(fake):
     assert res["status"] == "unavailable" and res["saved"] is True
     assert "403" in res["reason"] and "Bearer" not in res["reason"]
     assert ctx.state[tools.DOCS_KEY]["uc3"] == PRD
+
+
+def test_multipart_boundary_and_patch_metadata(fake):
+    ctx = _ctx()
+    tools.publish_prd(ctx, "uc3", PRD)
+    tools.publish_prd(ctx, "uc3", PRD + "\nmore")
+    for c in fake.calls:
+        boundary = c["headers"]["Content-Type"].split("boundary=")[1]
+        assert f"--{boundary}" in c["data"].decode() and f"--{boundary}--" in c["data"].decode()
+    patch = fake.calls[1]["data"].decode()
+    meta = json.loads(patch.split("\r\n\r\n")[1].split("\r\n--")[0])
+    assert meta == {"name": "PRD - uc3"}
+    assert "parents" not in meta and "mimeType" not in meta
+
+
+def test_patch_404_recreates_once_and_stores_new_id(fake):
+    ctx = _ctx()
+    tools.publish_prd(ctx, "uc3", PRD)
+    fake.patch_status = 404
+    fake.new_id = "F2"
+    res = tools.publish_prd(ctx, "uc3", PRD + "\nmore")
+    assert res["status"] == "published" and res["url"].endswith("F2")
+    assert [c["method"] for c in fake.calls] == ["POST", "PATCH", "POST"]
+    assert ctx.state["uc3:gdocs"]["uc3"]["file_id"] == "F2"
+    assert res["updated"] is False
+
+
+def test_patch_other_error_does_not_retry(fake):
+    ctx = _ctx()
+    tools.publish_prd(ctx, "uc3", PRD)
+    fake.patch_status = 500
+    res = tools.publish_prd(ctx, "uc3", PRD + "\nmore")
+    assert res["status"] == "unavailable"
+    assert [c["method"] for c in fake.calls] == ["POST", "PATCH"]

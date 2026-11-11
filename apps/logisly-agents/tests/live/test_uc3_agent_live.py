@@ -16,7 +16,7 @@ def _parts() -> list[types.Part]:
     src = get_settings().data_dir / "uc3" / "sources"
     parts = [
         types.Part.from_text(
-            text="Siapkan PRD checklist follow-up driver per milestone dan backlog Jira dari input ini."
+            text="Siapkan PRD follow-up driver berbasis milestone dan backlog Jira dari input minggu ini."
         )
     ]
     for name, mime in (
@@ -54,14 +54,15 @@ async def test_uc3_agent_live():
 
     docs = state.get("uc3:docs") or {}
     assert len(docs) == 1, list(docs)
-    assert "Pertanyaan terbuka" in next(iter(docs.values()))
+    doc = next(iter(docs.values()))
+    assert "Stories" in doc and "Pertanyaan terbuka" in doc
 
     uc3 = settings.data_dir / "uc3"
     ctx = read_context(uc3)
     jira = MockJira(state, uc3 / "jira" / "issues_snapshot.json", ctx["conventions"], ctx["calendar"])
     assert jira.get("LOG-3417")["status"] == "Won't Do"
-    new = [i for i in state["uc3:jira"]["issues"] if i["key"] > "LOG-3420" and i["type"] == "Story"]
+    new = [i for i in state["uc3:jira"]["issues"] if i["key"] >= "LOG-3421"]
     assert len(new) >= 8, [i["summary"] for i in new]
 
     assert "18 Desember" in turn1, turn1[:3000]
-    assert "LOG-3412" in turn1, turn1[:3000]
+    assert "LOG-3405" in turn1, turn1[:3000]

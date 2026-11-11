@@ -19,7 +19,11 @@ rm -rf "$HERE/.stage"
 mkdir -p "$STAGE/uc2/pricing" "$STAGE/uc3"
 cp "$DATA/uc2/pricing/pricing.db" "$STAGE/uc2/pricing/"
 cp "$DATA/uc2/business_rules.yaml" "$STAGE/uc2/"
-cp -R "$DATA/uc3/templates" "$DATA/uc3/github" "$DATA/uc3/team" "$STAGE/uc3/"
+cp -R "$DATA/uc3/templates" "$DATA/uc3/jira" "$DATA/uc3/team" "$STAGE/uc3/"
+
+# Optional: folder (in a Shared Drive) where UC3 publishes the PRD as a Google Doc.
+PRD_ENV=""
+if [ -n "${LOGISLY_PRD_FOLDER_ID:-}" ]; then PRD_ENV=",LOGISLY_PRD_FOLDER_ID=${LOGISLY_PRD_FOLDER_ID}"; fi
 
 cd "$HERE"
 gcloud run deploy "$SERVICE" \
@@ -28,7 +32,7 @@ gcloud run deploy "$SERVICE" \
   --no-allow-unauthenticated \
   --min-instances=1 --max-instances=1 \
   --memory=1Gi --cpu=1 --timeout=900 \
-  --set-env-vars "LOGISLY_AGENT=${AGENT},GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${PROJECT},GOOGLE_CLOUD_LOCATION=global"
+  --update-env-vars "LOGISLY_AGENT=${AGENT},GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${PROJECT},GOOGLE_CLOUD_LOCATION=global${PRD_ENV}"
 
 URL="$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" --format='value(status.url)')"
 gcloud run services update "$SERVICE" --project "$PROJECT" --region "$REGION" \

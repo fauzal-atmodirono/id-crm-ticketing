@@ -20,6 +20,29 @@ cd demo-data/logisly
 `gen_uc2.py` is seeded. The CSVs, SQLite DB and expected answers come out the
 same every run. The PDFs differ only in their embedded timestamps.
 
+## UC1: driver follow-up milestone checklists (`features/logisly/`)
+
+Three seeded trips, one scenario each (see `trips.py`). Open the console at
+`/logisly/console?key=<PROTON_BACKEND_KEY>`; the "Next milestone" control moves
+a trip and opens the driver conversation (app or WhatsApp).
+
+| Order | Driver / shipper | Starts at | Scenario |
+|---|---|---|---|
+| LGS-24017 | Pak Budi Santoso, FMCG | `assigned` | Clean trip: plate matches, locations are in the app. Only the driver-confirmation items are open. |
+| LGS-24021 | Pak Agus Wibowo, Shopee | `to_pickup` | Problem trip: driver app not active, not on site at the Shopee gate, DO not in the app. Moving it to `at_pickup` carries the install link and a photo ask, and the DO gap goes to the allocation team as a routed ticket. |
+| LGS-24033 | Pak Dedi Kurniawan, FMCG | `in_transit` | Checkpoint trip: ETA is past the RAD, so the next move shows a system item not OK. |
+
+**Demo script (about 6 minutes):**
+1. Open the console. All three trips show their current milestone and checklist.
+2. Move LGS-24021 to "Di lokasi muat" (`at_pickup`). The opening message carries the driver-app install link and asks for a photo of the unit with its plate.
+3. As the driver, reply "sya blum bisa login". The agent re-sends the install link and the login steps instead of ticking anything.
+4. Send a photo of the plate. The `unit_photo` item turns ticked in the console.
+5. Point at the ticket list: "DO not in app" is filed to the allocation team (`alloc`), not to the generic support queue, with the order id and driver.
+6. Move LGS-24033 to its next milestone to show the ETA-versus-RAD checkpoint. Then show quiet hours: between 22:00 and 05:00 WIB a move is applied but the driver is not messaged (the response says `deferred`). Tick "Send anyway" to override.
+
+If Chatwoot is unreachable the move still applies and the API answers 502; with no
+driver channel configured it answers 503.
+
 ## UC2: pricing & quotation filtering (`uc2/`)
 
 **Scenario:**

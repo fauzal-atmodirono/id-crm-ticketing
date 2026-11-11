@@ -16,7 +16,7 @@ def read_context(uc3_dir: Path) -> dict:
 
     return {
         "templates": templates,
-        "conventions": load("github/conventions.yaml"),
+        "conventions": load("jira/conventions.yaml"),
         "roster": load("team/roster.yaml"),
         "calendar": load("team/calendar.yaml"),
     }

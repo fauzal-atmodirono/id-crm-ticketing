@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from functools import lru_cache
 from typing import Any
 
@@ -18,18 +19,45 @@ from google.adk.tools import ToolContext
 from logisly_agents.config import get_settings
 from logisly_agents.uc3.capacity import capacity_check as _capacity_check
 from logisly_agents.uc3.context import read_context
-from logisly_agents.uc3.tracker import KEY as TRACKER_KEY
-from logisly_agents.uc3.tracker import MockTracker, TrackerError
+from logisly_agents.uc3.jira import KEY as JIRA_KEY
+from logisly_agents.uc3.jira import MockJira, TrackerError
 
 DOCS_KEY = "uc3:docs"
 PROPOSAL_KEY = "uc3:proposal"
 
 # Keys each proposal item may carry; the first set is required.
 _ITEM_KEYS: dict[str, tuple[set[str], set[str]]] = {
-    "create": ({"repo", "title", "labels"}, {"body", "milestone", "assignees"}),
-    "update": ({"ref"}, {"add_labels", "remove_labels", "milestone", "assignees", "body_append", "comment"}),
-    "close": ({"ref", "reason"}, {"comment"}),
+    "create": (
+        {"type", "summary", "components"},
+        {
+            "temp_id",
+            "description",
+            "acceptance",
+            "labels",
+            "story_points",
+            "sprint",
+            "assignee",
+            "epic",
+            "links",
+        },
+    ),
+    "update": (
+        {"key"},
+        {
+            "add_labels",
+            "remove_labels",
+            "sprint",
+            "assignee",
+            "story_points",
+            "description_append",
+            "acceptance_append",
+            "add_links",
+            "comment",
+        },
+    ),
+    "transition": ({"key", "status"}, {"resolution", "comment", "duplicate_of"}),
 }
+_ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9]*-\d+$")
 
 
 def _uc3_dir():
@@ -42,14 +70,14 @@ def _context() -> dict:
     return json.loads(json.dumps(read_context(_uc3_dir()), default=str))
 
 
-def _tracker(tool_context: ToolContext) -> MockTracker:
-    return _tracker_on(tool_context.state)
+def _jira(tool_context: ToolContext) -> MockJira:
+    return _jira_on(tool_context.state)
 
 
-def _tracker_on(state) -> MockTracker:
+def _jira_on(state) -> MockJira:
     ctx = _context()
-    snapshot = _uc3_dir() / "github" / "issues_snapshot.json"
-    return MockTracker(state, snapshot, ctx["conventions"], ctx["calendar"])
+    snapshot = _uc3_dir() / "jira" / "issues_snapshot.json"
+    return MockJira(state, snapshot, ctx["conventions"], ctx["calendar"])
 
 
 def _err(prefix: str, exc: Exception) -> dict:
@@ -59,7 +87,7 @@ def _err(prefix: str, exc: Exception) -> dict:
 
 
 def get_templates() -> dict:
-    """Ambil template dokumen produk (template PRD dan template user story) dari repo tim.
+    """Ambil template dokumen produk (template PRD format Logisly dan template user story) dari repo tim.
 
     Ikuti struktur template ini persis saat menulis PRD dan story.
     """
@@ -70,7 +98,11 @@ def get_templates() -> dict:
 
 
 def get_conventions() -> dict:
-    """Ambil konvensi GitHub tim: daftar repo, aturan label, format judul dan story point."""
+    """Ambil konvensi Jira tim.
+
+    Isinya: project, tipe issue, status, resolution, tipe link, component, story point,
+    format summary, definition of ready dan definition of done.
+    """
     try:
         return {"conventions": _context()["conventions"]}
     except Exception as exc:
@@ -78,7 +110,7 @@ def get_conventions() -> dict:
 
 
 def get_team() -> dict:
-    """Ambil roster tim (login GitHub, repo, kapasitas story point per sprint, cuti) dan kalender sprint."""
+    """Ambil roster tim (id Jira, component, kapasitas story point per sprint, cuti) dan kalender sprint."""
     try:
         ctx = _context()
         return {"roster": ctx["roster"], "calendar": ctx["calendar"]}
@@ -87,32 +119,36 @@ def get_team() -> dict:
 
 
 def search_issues(
-    tool_context: ToolContext, repo: str = "", state: str = "open", text: str = "", label: str = ""
+    tool_context: ToolContext,
+    text: str = "",
+    status: str = "open",
+    component: str = "",
+    issue_type: str = "",
+    label: str = "",
 ) -> dict:
-    """Cari issue GitHub yang sudah ada sebelum mengusulkan issue baru.
+    """Cari issue Jira yang sudah ada sebelum mengusulkan issue baru.
 
     Args:
-        repo: Nama repo, mis. driver-app. Kosong berarti semua repo.
-        state: open, closed atau all.
-        text: Kata kunci yang dicari di judul dan isi issue.
+        text: Kata kunci yang dicari di summary dan description.
+        status: open (To Do dan In Progress), done (Done dan Won't Do) atau all.
+        component: Hanya issue dengan component ini, mis. Driver App.
+        issue_type: Epic, Story, Task atau Bug. Kosong berarti semua tipe.
         label: Hanya issue dengan label ini.
     """
     try:
-        if state not in ("open", "closed", "all"):
-            return {"error": "state harus open, closed atau all"}
-        return {"issues": _tracker(tool_context).search(repo, state, text, label)}
+        return {"issues": _jira(tool_context).search(text, status, component, issue_type, label)}
     except Exception as exc:
         return _err("Gagal mencari issue", exc)
 
 
-def get_issue(tool_context: ToolContext, ref: str) -> dict:
-    """Ambil satu issue lengkap (isi dan komentar).
+def get_issue(tool_context: ToolContext, key: str) -> dict:
+    """Ambil satu issue lengkap (deskripsi, acceptance, link dan komentar).
 
     Args:
-        ref: Rujukan issue, format '<repo>#<nomor>', mis. platform-api#131.
+        key: Kunci issue, mis. LOG-3412.
     """
     try:
-        return {"issue": _tracker(tool_context).get(ref)}
+        return {"issue": _jira(tool_context).get(key)}
     except Exception as exc:
         return _err("Gagal membaca issue", exc)
 
@@ -121,8 +157,8 @@ def capacity_check(items: list[dict]) -> dict:
     """Hitung kapasitas tim terhadap story yang diusulkan untuk sprint sebelum code freeze.
 
     Args:
-        items: Daftar story usulan, tiap elemen berisi assignee (login GitHub), sp (story point,
-            bilangan bulat) dan sprint (nama sprint, mis. 'Sprint 26.23').
+        items: Daftar story usulan, tiap elemen berisi assignee (id orang di roster, mis. 'rizky-r'),
+            sp (story point, bilangan bulat) dan sprint (nama sprint, mis. 'Sprint 26.23').
     """
     try:
         ctx = _context()
@@ -140,7 +176,7 @@ def save_document(tool_context: ToolContext, name: str, markdown: str) -> dict:
     """Simpan dokumen (mis. PRD final) dalam format markdown ke sesi.
 
     Args:
-        name: Nama dokumen, mis. prd_driver-app-ai-assistant.
+        name: Nama dokumen, mis. prd_uc1-milestone-checklist.
         markdown: Isi dokumen lengkap.
     """
     try:
@@ -156,26 +192,43 @@ def save_document(tool_context: ToolContext, name: str, markdown: str) -> dict:
 
 def create_issue(
     tool_context: ToolContext,
-    repo: str,
-    title: str,
-    body: str,
-    labels: list[str],
-    milestone: str = "",
-    assignees: list[str] | None = None,
+    issue_type: str,
+    summary: str,
+    description: str,
+    acceptance: list[str],
+    components: list[str],
+    labels: list[str] | None = None,
+    story_points: int = 0,
+    sprint: str = "",
+    assignee: str = "",
+    epic: str = "",
 ) -> dict:
-    """Buat issue baru. Panggil hanya setelah pengguna menyetujui usulan.
+    """Buat issue Jira baru. Panggil hanya setelah pengguna menyetujui usulan.
 
     Args:
-        repo: Repo tujuan.
-        title: Judul format '[area] kalimat'.
-        body: Isi issue (story, kriteria penerimaan, dependensi).
-        labels: Tepat satu label type:*, satu area:* dan satu priority:*, ditambah label lain bila perlu.
-        milestone: Nama sprint, mis. 'Sprint 26.23'. Kosong bila tanpa milestone.
-        assignees: Login GitHub penanggung jawab.
+        issue_type: Epic, Story, Task atau Bug.
+        summary: Untuk Story format '[Driver App|BE|FE|Ops Console] As <role>, I want ... so that ...'.
+        description: Latar belakang dan konteks issue.
+        acceptance: Daftar kriteria penerimaan.
+        components: Component Jira, mis. ["Driver App"]. Satu component per story.
+        labels: Label bebas, mis. ["uc1-milestone", "pilot"].
+        story_points: 1, 2, 3, 5 atau 8. Wajib untuk Story. 0 berarti tidak diisi.
+        sprint: Nama sprint, mis. 'Sprint 26.23'. Kosong bila belum direncanakan.
+        assignee: Id orang di roster, mis. 'rizky-r'.
+        epic: Kunci Epic induk, mis. LOG-3420.
     """
     try:
-        return _tracker(tool_context).create(
-            repo, title, body, list(labels), milestone or None, list(assignees or [])
+        return _jira(tool_context).create(
+            issue_type,
+            summary,
+            description,
+            list(acceptance or []),
+            list(components or []),
+            list(labels or []),
+            story_points or None,
+            sprint or None,
+            assignee or None,
+            epic or None,
         )
     except Exception as exc:
         return _err("Gagal membuat issue", exc)
@@ -183,66 +236,87 @@ def create_issue(
 
 def update_issue(
     tool_context: ToolContext,
-    ref: str,
+    key: str,
     add_labels: list[str] | None = None,
     remove_labels: list[str] | None = None,
-    milestone: str = "",
-    assignees: list[str] | None = None,
-    body_append: str = "",
+    sprint: str = "",
+    assignee: str = "",
+    story_points: int = 0,
+    description_append: str = "",
+    acceptance_append: list[str] | None = None,
+    add_links: list[dict] | None = None,
 ) -> dict:
     """Ubah issue yang ada. Panggil hanya setelah pengguna menyetujui perubahan itu.
 
     Args:
-        ref: Rujukan issue '<repo>#<nomor>'.
+        key: Kunci issue, mis. LOG-3412.
         add_labels: Label yang ditambahkan.
         remove_labels: Label yang dilepas.
-        milestone: Sprint baru. Kosong berarti milestone tidak diubah.
-        assignees: Daftar penanggung jawab baru. Kosong/tidak diisi berarti tidak diubah.
-        body_append: Teks yang ditambahkan di akhir isi issue.
+        sprint: Sprint baru. Kosong berarti tidak diubah.
+        assignee: Id penanggung jawab baru. Kosong berarti tidak diubah.
+        story_points: Story point baru (1, 2, 3, 5, 8). 0 berarti tidak diubah.
+        description_append: Teks yang ditambahkan di akhir description.
+        acceptance_append: Kriteria penerimaan yang ditambahkan.
+        add_links: Link baru, tiap elemen {"type": ..., "key": ...}; dibaca "issue ini <type> <key>".
     """
     try:
-        return _tracker(tool_context).update(
-            ref,
+        return _jira(tool_context).update(
+            key,
             add_labels=list(add_labels or []),
             remove_labels=list(remove_labels or []),
-            milestone=milestone or None,
-            assignees=list(assignees) if assignees else None,
-            body_append=body_append,
+            sprint=sprint or None,
+            assignee=assignee or None,
+            story_points=story_points or None,
+            description_append=description_append,
+            acceptance_append=list(acceptance_append or []),
+            add_links=list(add_links or []),
         )
     except Exception as exc:
         return _err("Gagal mengubah issue", exc)
 
 
-def comment_issue(tool_context: ToolContext, ref: str, body: str) -> dict:
+def comment_issue(tool_context: ToolContext, key: str, body: str) -> dict:
     """Tambah komentar pada issue. Panggil hanya setelah pengguna menyetujui.
 
     Args:
-        ref: Rujukan issue '<repo>#<nomor>'.
+        key: Kunci issue, mis. LOG-3398.
         body: Isi komentar.
     """
     try:
-        return _tracker(tool_context).comment(ref, body)
+        return _jira(tool_context).comment(key, body)
     except Exception as exc:
         return _err("Gagal menambah komentar", exc)
 
 
-def close_issue(tool_context: ToolContext, ref: str, reason: str, comment: str = "") -> dict:
-    """Tutup issue. Panggil hanya setelah pengguna menyetujui penutupan itu.
+def transition_issue(
+    tool_context: ToolContext,
+    key: str,
+    status: str,
+    resolution: str = "",
+    comment: str = "",
+    duplicate_of: str = "",
+) -> dict:
+    """Pindahkan status issue. Panggil hanya setelah pengguna menyetujui perpindahan itu.
 
     Args:
-        ref: Rujukan issue '<repo>#<nomor>'.
-        reason: completed, not_planned atau duplicate.
-        comment: Komentar penutup, mis. rujukan ke issue pengganti.
+        key: Kunci issue, mis. LOG-3417.
+        status: To Do, In Progress, Done atau Won't Do.
+        resolution: Done, Duplicate atau Won't Do. Kosong berarti sesuai status.
+        comment: Komentar, mis. rujukan ke issue pengganti.
+        duplicate_of: Kunci issue yang diduplikasi. Menambah link 'duplicates' dan resolution Duplicate.
     """
     try:
-        return _tracker(tool_context).close(ref, reason, comment)  # type: ignore[arg-type]
+        return _jira(tool_context).transition(key, status, resolution, comment, duplicate_of)
     except Exception as exc:
-        return _err("Gagal menutup issue", exc)
+        return _err("Gagal memindahkan status issue", exc)
 
 
 def _check_item(kind: str, args: Any) -> dict:
     if not isinstance(args, dict):
         raise TrackerError("setiap usulan harus berupa objek")
+    args = dict(args)
+    if kind == "create" and "issue_type" in args and "type" not in args:
+        args["type"] = args.pop("issue_type")  # accept the tool's own parameter name
     required, optional = _ITEM_KEYS[kind]
     missing = sorted(required - set(args))
     unknown = sorted(set(args) - required - optional)
@@ -253,111 +327,159 @@ def _check_item(kind: str, args: Any) -> dict:
     return args
 
 
-def _run_item(tracker: MockTracker, kind: str, args: dict) -> dict:
-    """Apply one proposal item to ``tracker``. The same code runs for the dry run and the real apply."""
+def _resolve(ref: Any, temp: dict[str, str]) -> Any:
+    """Map a temp_id to the key it was created under; real keys pass through; anything else is an error."""
+    if not ref:
+        return ref
+    if ref in temp:
+        return temp[ref]
+    if isinstance(ref, str) and _ISSUE_KEY_RE.match(ref):
+        return ref
+    raise TrackerError(f"temp_id tidak dikenal (belum dibuat lebih dulu di usulan ini): {ref}")
+
+
+def _run_item(jira: MockJira, kind: str, args: dict, temp: dict[str, str]) -> dict:
+    """Apply one proposal item to ``jira``. The same code runs for the dry run and the real apply.
+
+    ``temp`` maps temp_id -> created key; a successful create registers its own temp_id in it.
+    """
     args = _check_item(kind, args)
     if kind == "create":
-        return tracker.create(
-            args["repo"],
-            args["title"],
-            args.get("body") or "",
+        tid = args.get("temp_id")
+        if tid and (tid in temp or _ISSUE_KEY_RE.match(str(tid))):
+            raise TrackerError(f"temp_id tidak valid atau dipakai ganda: {tid}")
+        links = [
+            {**ln, "key": _resolve(ln.get("key"), temp)}
+            for ln in args.get("links") or []
+            if isinstance(ln, dict)
+        ]
+        out = jira.create(
+            args["type"],
+            args["summary"],
+            args.get("description") or "",
+            list(args.get("acceptance") or []),
+            list(args["components"] or []),
             list(args.get("labels") or []),
-            args.get("milestone") or None,
-            list(args.get("assignees") or []),
+            args.get("story_points") or None,
+            args.get("sprint") or None,
+            args.get("assignee") or None,
+            _resolve(args.get("epic"), temp) or None,
+            links,
         )
+        if tid:
+            temp[tid] = out["key"]
+        return out
     if kind == "update":
-        out = tracker.update(
-            args["ref"],
+        links = [
+            {**ln, "key": _resolve(ln.get("key"), temp)}
+            for ln in args.get("add_links") or []
+            if isinstance(ln, dict)
+        ]
+        out = jira.update(
+            args["key"],
             add_labels=list(args.get("add_labels") or []),
             remove_labels=list(args.get("remove_labels") or []),
-            milestone=args.get("milestone") or None,
-            assignees=list(args["assignees"]) if args.get("assignees") else None,
-            body_append=args.get("body_append") or "",
+            sprint=args.get("sprint") or None,
+            assignee=args.get("assignee") or None,
+            story_points=args.get("story_points") or None,
+            description_append=args.get("description_append") or "",
+            acceptance_append=list(args.get("acceptance_append") or []),
+            add_links=links,
         )
         if args.get("comment"):
-            tracker.comment(args["ref"], args["comment"])
+            jira.comment(args["key"], args["comment"])
         return out
-    return tracker.close(args["ref"], args["reason"], args.get("comment") or "")
+    return jira.transition(
+        args["key"],
+        args["status"],
+        args.get("resolution") or "",
+        args.get("comment") or "",
+        _resolve(args.get("duplicate_of"), temp) or "",
+    )
 
 
 _SPLIT_WARNING = (
-    "judul menyebut beberapa kemampuan sekaligus; pecah menjadi story terpisah bila tiap kemampuan "
+    "summary menyebut beberapa kemampuan sekaligus; pecah menjadi story terpisah bila tiap kemampuan "
     "bisa dikerjakan dan diuji sendiri"
 )
 
 
-def _is_epic(title: str) -> bool:
-    t = (title or "").lower()
-    return "epic" in t or "epik" in t
-
-
-def _combined(title: str) -> bool:
-    """A non-epic story title listing several capabilities ('chat, voice note, dan foto')."""
-    t = title.lower()
-    if _is_epic(t):
+def _combined(args: dict) -> bool:
+    """A Story whose capability ('I want ...' up to 'so that') lists several things."""
+    if args.get("type") != "Story":
         return False
-    return "," in t or t.count(" dan ") >= 2
+    t = str(args.get("summary") or "").lower()
+    m = re.search(r"(?:i want|saya ingin)\s+(.*?)(?:\s+so that\b|\s+agar\b|$)", t)
+    cap = m.group(1) if m else t
+    joins = cap.count(" and ") + cap.count(" dan ")
+    # A bare comma enumerating values ("gps, app or manual") is fine; commas plus "and"/"dan" are not.
+    return joins >= 2 or ("," in cap and joins >= 1)
 
 
 def _check_estimate(args: dict) -> None:
-    """Definition of Ready: every story carries exactly one estimate label sp:1|2|3|5|8."""
-    if _is_epic(args.get("title", "")):
+    """Definition of Ready: every Story carries story points 1|2|3|5|8; above 8 it must be split."""
+    if args.get("type") != "Story":
         return
-    sp = [x for x in args.get("labels") or [] if str(x).startswith("sp:")]
-    if len(sp) != 1:
-        raise TrackerError(
-            "story wajib punya tepat satu label estimasi sp:1|2|3|5|8; bila lebih dari 8 poin, pecah story"
-        )
+    sp = args.get("story_points")
+    if sp is None or sp == 0:
+        raise TrackerError("Story wajib punya story point 1|2|3|5|8")
+    if isinstance(sp, int) and sp > 8:
+        raise TrackerError(f"story point {sp} terlalu besar (maks 8); pecah story")
 
 
 def _label(kind: str, args: Any) -> str:
     if not isinstance(args, dict):
         return kind
     if kind == "create":
-        return f"buat {args.get('repo', '?')}: {args.get('title', '?')}"
-    verb = "ubah" if kind == "update" else "tutup"
-    return f"{verb} {args.get('ref', '?')}"
+        return f"buat {args.get('type', args.get('issue_type', '?'))}: {args.get('summary', '?')}"
+    if kind == "update":
+        return f"ubah {args.get('key', '?')}"
+    return f"pindahkan {args.get('key', '?')} ke {args.get('status', '?')}"
 
 
 def propose_changes(
     tool_context: ToolContext,
     creates: list[dict],
     updates: list[dict],
-    closes: list[dict],
+    transitions: list[dict],
 ) -> dict:
     """Validasi seluruh usulan perubahan backlog TANPA menulis apa pun, lalu simpan sebagai usulan P1..Pn.
 
     Panggil sebelum menyajikan tabel usulan. Bila ada item berstatus error, atau item dengan
-    peringatan (judul menggabungkan beberapa kemampuan), perbaiki lalu panggil lagi dengan seluruh
+    peringatan (summary menggabungkan beberapa kemampuan), perbaiki lalu panggil lagi dengan seluruh
     usulan. Usulan baru menggantikan usulan sebelumnya.
 
     Args:
-        creates: Issue baru. Tiap elemen: repo, title ('[area] kalimat' dalam Bahasa Indonesia),
-            labels (tepat satu type:*, area:*, priority:*, dan untuk story tepat satu sp:*), body,
-            milestone (nama sprint), assignees (login GitHub).
-        updates: Perubahan issue yang ada. Tiap elemen: ref ('<repo>#<nomor>'), dan opsional
-            add_labels, remove_labels, milestone, assignees, body_append, comment.
-        closes: Penutupan issue. Tiap elemen: ref, reason (completed, not_planned atau duplicate),
-            comment (mis. rujukan ke issue pengganti).
+        creates: Issue baru. Tiap elemen: type (Epic, Story, Task, Bug), summary, components,
+            dan opsional description, acceptance (daftar), labels, story_points (wajib untuk Story,
+            1|2|3|5|8), sprint, assignee (id roster), epic, links ([{type, key}]). Beri temp_id
+            (mis. "E1") pada Epic baru; story di usulan yang sama boleh mengisi epic dengan temp_id itu.
+        updates: Perubahan issue yang ada. Tiap elemen: key (mis. LOG-3412), dan opsional add_labels,
+            remove_labels, sprint, assignee, story_points, description_append, acceptance_append,
+            add_links, comment.
+        transitions: Perpindahan status. Tiap elemen: key, status (To Do, In Progress, Done, Won't Do),
+            dan opsional resolution, comment, duplicate_of (kunci issue yang diduplikasi).
     """
     try:
-        sim = {TRACKER_KEY: copy.deepcopy(_tracker(tool_context).state[TRACKER_KEY])}
-        tracker = _tracker_on(sim)
+        sim = {JIRA_KEY: copy.deepcopy(_jira(tool_context).state[JIRA_KEY])}
+        jira = _jira_on(sim)
+        temp: dict[str, str] = {}
         items: list[dict] = []
         report: list[dict] = []
-        batches = (("create", creates), ("update", updates), ("close", closes))
+        batches = (("create", creates), ("update", updates), ("transition", transitions))
         for kind, batch in batches:
             for args in batch or []:
                 pid = f"P{len(items) + 1}"
                 row: dict[str, Any] = {"id": pid, "kind": kind, "usulan": _label(kind, args)}
                 try:
-                    if kind == "create" and isinstance(args, dict):
-                        _check_estimate(args)
-                    out = _run_item(tracker, kind, args)
+                    clean = _check_item(kind, args)
+                    if kind == "create":
+                        _check_estimate(clean)
+                    out = _run_item(jira, kind, args, temp)
                     row["status"] = "ok"
                     if kind == "create":
-                        row["predicted_ref"] = out["ref"]
-                        if _combined(args["title"]):
+                        row["predicted_key"] = out["key"]
+                        if _combined(clean):
                             row["peringatan"] = _SPLIT_WARNING
                 except Exception as exc:  # noqa: BLE001 - every item failure is reported, not raised
                     row["status"] = "error"
@@ -375,7 +497,8 @@ def propose_changes(
 def apply_proposal(tool_context: ToolContext, ids: list[str] | None = None) -> dict:
     """Terapkan usulan yang disimpan propose_changes, berurutan. Panggil SEKALI setelah pengguna setuju.
 
-    Item yang sudah diterapkan tidak diterapkan ulang. Laporkan setiap error ke pengguna.
+    Item yang sudah diterapkan tidak diterapkan ulang. temp_id Epic diganti kunci Jira yang sebenarnya.
+    Laporkan setiap error ke pengguna.
 
     Args:
         ids: Id usulan yang disetujui, mis. ["P1", "P3"]. Kosong berarti semua usulan.
@@ -387,7 +510,13 @@ def apply_proposal(tool_context: ToolContext, ids: list[str] | None = None) -> d
         items = copy.deepcopy(proposal["items"])
         known = {i["id"] for i in items}
         wanted = list(ids or [])
-        tracker = _tracker(tool_context)
+        jira = _jira(tool_context)
+        # temp_ids of items applied in an earlier call keep resolving to their real keys.
+        temp: dict[str, str] = {}
+        for item in items:
+            tid = item["args"].get("temp_id") if isinstance(item["args"], dict) else None
+            if item["applied"] and tid and (item.get("result") or {}).get("key"):
+                temp[tid] = item["result"]["key"]
         results: list[dict] = []
         applied = failed = already = 0
         for item in items:
@@ -398,15 +527,15 @@ def apply_proposal(tool_context: ToolContext, ids: list[str] | None = None) -> d
                 results.append({"id": item["id"], "status": "already_applied", **(item.get("result") or {})})
                 continue
             try:
-                out = _run_item(tracker, item["kind"], item["args"])
+                out = _run_item(jira, item["kind"], item["args"], temp)
             except Exception as exc:  # noqa: BLE001 - every item failure is reported, not raised
                 failed += 1
                 results.append({"id": item["id"], "status": "error", "error": str(exc) or type(exc).__name__})
                 continue
             item["applied"] = True
-            item["result"] = {"ref": out["ref"]}
+            item["result"] = {"key": out["key"]}
             applied += 1
-            results.append({"id": item["id"], "status": "applied", "ref": out["ref"]})
+            results.append({"id": item["id"], "status": "applied", "key": out["key"]})
             # Persist after each item so a crash mid-way never re-applies finished items.
             tool_context.state[PROPOSAL_KEY] = {"items": copy.deepcopy(items)}
         for pid in wanted:

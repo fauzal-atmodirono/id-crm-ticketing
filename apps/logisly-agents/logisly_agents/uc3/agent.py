@@ -94,7 +94,7 @@ def build_uc3_agent(settings: Settings | None = None) -> LlmAgent:
             FunctionTool(tools.create_issue, require_confirmation=confirm),
             FunctionTool(tools.update_issue, require_confirmation=confirm),
             FunctionTool(tools.comment_issue, require_confirmation=confirm),
-            FunctionTool(tools.close_issue, require_confirmation=confirm),
+            FunctionTool(tools.transition_issue, require_confirmation=confirm),
         ],
         before_model_callback=convert_uploads,
     )

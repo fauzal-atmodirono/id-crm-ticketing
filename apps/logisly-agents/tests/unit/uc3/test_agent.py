@@ -7,11 +7,21 @@ from logisly_agents.uc3.agent import build_uc3_agent
 from logisly_agents.uploads import convert_uploads
 
 NAMES = {
-    "get_templates", "get_conventions", "get_team", "search_issues", "get_issue", "capacity_check",
-    "save_document", "propose_changes", "apply_proposal",
-    "create_issue", "update_issue", "comment_issue", "close_issue",
+    "get_templates",
+    "get_conventions",
+    "get_team",
+    "search_issues",
+    "get_issue",
+    "capacity_check",
+    "save_document",
+    "propose_changes",
+    "apply_proposal",
+    "create_issue",
+    "update_issue",
+    "comment_issue",
+    "transition_issue",
 }
-WRITES = {"apply_proposal", "create_issue", "update_issue", "comment_issue", "close_issue"}
+WRITES = {"apply_proposal", "create_issue", "update_issue", "comment_issue", "transition_issue"}
 
 
 def _tools(agent):

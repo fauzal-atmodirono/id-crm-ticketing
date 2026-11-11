@@ -25,20 +25,22 @@ def test_xlsx_keeps_footnote():
 
 def test_docx_with_table():
     text = part_to_text(
-        "01_request_driver-app-ai-assistant.docx",
+        "01_request_milestone-follow-up.docx",
         "application/octet-stream",
-        _read("uc3/sources/01_request_driver-app-ai-assistant.docx"),
+        _read("uc3/sources/01_request_milestone-follow-up.docx"),
     )
-    assert "minggu kedua Januari 2027" in text
-    assert "Kasus selesai tanpa ops | 20-30% | 60%" in text
+    assert "4 Desember 2026" in text
+    assert "Pertanyaan ke driver per trip | 18 | 6" in text
 
 
 def test_eml():
     text = part_to_text(
-        "03_email_cs_epod-request.eml", "message/rfc822", _read("uc3/sources/03_email_cs_epod-request.eml")
+        "03_email_cs_unloading-update.eml",
+        "message/rfc822",
+        _read("uc3/sources/03_email_cs_unloading-update.eml"),
     )
     assert "31 Desember 2026" in text
-    assert "Subject: Fwd: Permintaan bukti terima digital" in text
+    assert "Subject: Fwd: Update bongkar dan bukti terima terlambat" in text
 
 
 def test_text_kinds_decoded():

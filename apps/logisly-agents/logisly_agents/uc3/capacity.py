@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-TEAM_REPOS = {
-    "mobile": {"driver-app"},
-    "backend": {"platform-api"},
-    "frontend": {"shipper-portal", "ops-console"},
+TEAM_COMPONENTS = {
+    "mobile": {"Driver App"},
+    "backend": {"Platform", "AI Agent"},
+    "frontend": {"Ops Console", "Shipper Portal"},
 }
 
 
@@ -26,9 +26,9 @@ def _num(x: float):
 
 
 def _team_of(person: dict) -> str | None:
-    repos = set(person.get("repos") or [])
-    for team, team_repos in TEAM_REPOS.items():
-        if repos & team_repos:
+    components = set(person.get("components") or [])
+    for team, team_components in TEAM_COMPONENTS.items():
+        if components & team_components:
             return team
     return None
 
@@ -50,11 +50,11 @@ def capacity_check(items: list[dict], roster: dict, calendar: dict) -> dict:
     window = [s["name"] for s in sprints]
     known_sprints = {s["name"] for s in calendar["sprints"]}
     people = roster["people"]
-    by_login = {p["github"]: p for p in people}
+    by_id = {p["id"]: p for p in people}
     committed_map = roster.get("committed") or {}
 
-    cap: dict[str, float] = {t: 0.0 for t in TEAM_REPOS}
-    com: dict[str, float] = {t: 0.0 for t in TEAM_REPOS}
+    cap: dict[str, float] = {t: 0.0 for t in TEAM_COMPONENTS}
+    com: dict[str, float] = {t: 0.0 for t in TEAM_COMPONENTS}
     for p in people:
         team = _team_of(p)
         if team is None or not p.get("capacity_sp"):
@@ -63,10 +63,10 @@ def capacity_check(items: list[dict], roster: dict, calendar: dict) -> dict:
             cap[team] += p["capacity_sp"] * (1 - _leave_fraction(p, s))
             com[team] += (committed_map.get(s["name"]) or {}).get(p["name"], 0)
 
-    proposed = {t: 0 for t in TEAM_REPOS}
+    proposed = {t: 0 for t in TEAM_COMPONENTS}
     after_window, no_team, unknown, unknown_sprints = [], [], [], []
     for it in items:
-        person = by_login.get(it["assignee"])
+        person = by_id.get(it["assignee"])
         if person is None:
             if it["assignee"] not in unknown:
                 unknown.append(it["assignee"])
@@ -83,7 +83,7 @@ def capacity_check(items: list[dict], roster: dict, calendar: dict) -> dict:
             proposed[team] += it["sp"]
 
     teams = {}
-    for t in TEAM_REPOS:
+    for t in TEAM_COMPONENTS:
         free = cap[t] - com[t]
         teams[t] = {
             "capacity": _num(cap[t]),

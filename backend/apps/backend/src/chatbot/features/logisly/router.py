@@ -64,6 +64,22 @@ class MilestoneBody(BaseModel):
     force: bool = False
 
 
+def _checklist_view(trip: dict[str, Any]) -> list[dict[str, Any]]:
+    """Current-milestone items with their state, so the console needs no item table."""
+    code = trip.get("milestone", "")
+    rec = trip.get("checklists", {}).get(code, {})
+    return [
+        {
+            "id": i.id,
+            "label": i.label,
+            "source": i.source,
+            "status": milestones._state(trip, code, i.id),
+            "value": rec.get(i.id, {}).get("value"),
+        }
+        for i in milestones.checklist_for(trip, code)
+    ]
+
+
 def make_authorizer(settings: Settings) -> Callable[[str | None], None]:
     def _authorize(x_api_key: str | None) -> None:
         key = settings.proton_backend_key
@@ -117,7 +133,9 @@ def build_logisly_router(  # noqa: PLR0915 - one closure holds every route
     async def list_trips(x_api_key: str | None = Header(default=None)) -> dict[str, Any]:
         _authorize(x_api_key)
         return {
-            "trips": list(TRIPS.trips.values()),
+            "trips": [
+                {**t, "checklist": _checklist_view(t)} for t in TRIPS.trips.values()
+            ],
             "anomalies": {k: v["label"] for k, v in ANOMALIES.items()},
             "milestones": [[code, label] for code, label in milestones.MILESTONES],
             "no_reply_call_seconds": settings.logisly_no_reply_call_seconds,

@@ -248,3 +248,15 @@ def test_milestone_validates_order_and_code():
         "assigned",
         "Pre check driver",
     ]
+
+
+def test_console_has_milestone_controls():
+    page = _client(_settings()).get("/logisly/console").text
+    assert "/logisly/milestone" in page and "Next milestone" in page
+
+
+def test_trips_carry_a_checklist_view():
+    data = _client(_settings()).get("/logisly/trips", headers={"X-API-Key": "k"}).json()
+    trip = data["trips"][0]
+    assert trip["checklist"], "current milestone should have checklist rows"
+    assert set(trip["checklist"][0]) == {"id", "label", "source", "status", "value"}

@@ -34,13 +34,13 @@ a trip and opens the driver conversation (app or WhatsApp).
 
 **Demo script (about 6 minutes):**
 1. Open the console. All three trips show their current milestone and checklist.
-2. Move LGS-24021 to "Di lokasi muat" (`at_pickup`). Between 22:00 and 05:00 WIB the move is deferred and nothing is sent, so run this in the daytime or tick "Force (ignore quiet hours)". The opening message carries the driver-app install link and asks for a photo of the unit with its plate.
-3. As the driver, reply "sya blum bisa login". The agent re-sends the install link and the login steps instead of ticking anything.
+2. Move LGS-24021 to "Di lokasi muat" (`at_pickup`). Between 22:00 and 05:00 WIB the milestone is still applied but the driver message is deferred, so run this in the daytime or tick "Force (ignore quiet hours)". A deferred message is not lost: pick the same milestone in the select, tick Force and press Set to send it (and file its tickets) now. The opening message carries the driver-app install link and asks for a photo of the unit with its plate.
+3. As the driver, reply "sya blum bisa login". The agent re-sends the install link instead of ticking anything.
 4. Send a photo of the plate. The `unit_photo` item turns ticked in the console.
 5. Open the driver conversation in Chatwoot. "DO not in app" is a private note labelled `team-alloc` on that conversation, filed only when the opening message is actually sent (not on a deferred move).
-6. Show LGS-24033: its ETA-within-RAD item is already not OK in the console; moving it to `at_drop` applies the milestone with no new system item failing. Then show quiet hours: between 22:00 and 05:00 WIB a move is applied but the driver is not messaged (the response says `deferred`). Tick "Force (ignore quiet hours)" to override.
+6. Show LGS-24033: its ETA-within-RAD item is already not OK in the console; moving it to `at_drop` applies the milestone with no new system item failing, and the conversation it opens also gets the seed-time "Perjalanan sesuai RAD → Tim CT" ticket (a private note labelled `team-ct`). Then show quiet hours: between 22:00 and 05:00 WIB a move is applied but the driver is not messaged (the response says `deferred`). Tick "Force (ignore quiet hours)" to override, or re-send the deferred message later with Force as in step 2.
 
-If Chatwoot is unreachable the move still applies and the API answers 502; with no
+If Chatwoot is unreachable the move still applies and the API answers 502; posting the same milestone again re-sends the message. With no
 driver channel configured it answers 503.
 
 ## UC2: pricing & quotation filtering (`uc2/`)

@@ -260,3 +260,43 @@ def test_trips_carry_a_checklist_view():
     trip = data["trips"][0]
     assert trip["checklist"], "current milestone should have checklist rows"
     assert set(trip["checklist"][0]) == {"id", "label", "source", "status", "value"}
+
+
+@respx.mock
+def test_deferred_milestone_is_resent_with_force_and_files_adopted_ticket():
+    create, _ = _stub_chatwoot()
+    c = _ms_client(NIGHT)
+    j = {"order_id": "LGS-24021", "milestone": "at_pickup"}
+    assert c.post("/logisly/milestone", json=j, headers=H).json()["deferred"] is True
+    again = c.post("/logisly/milestone", json={**j, "force": True}, headers=H).json()
+    assert again["sent"] is True and again["conversation_id"] == 30
+    assert create.call_count == 1
+    assert any(
+        b"team-alloc" in c.request.content for c in respx.calls if c.request.method == "POST"
+    )
+    assert milestones.PENDING_TICKETS == []
+    assert "pending_notify" not in trips.TRIPS.get("LGS-24021")
+    events = [e["status"] for e in trips.TRIPS.get("LGS-24021")["events"]]
+    assert events.count("milestone:at_pickup") == 1  # not applied twice
+
+
+@respx.mock
+def test_failed_send_is_retried_by_a_plain_repost():
+    create, _ = _stub_chatwoot()
+    create.side_effect = [httpx.ConnectError("down"), httpx.Response(200, json={"id": 30})]
+    c = _ms_client()
+    j = {"order_id": "LGS-24021", "milestone": "at_pickup"}
+    assert c.post("/logisly/milestone", json=j, headers=H).status_code == 502
+    assert c.post("/logisly/milestone", json=j, headers=H).json()["sent"] is True
+    assert c.post("/logisly/milestone", json=j, headers=H).json()["sent"] is False
+    assert create.call_count == 2
+
+
+@respx.mock
+def test_deferred_resend_without_force_stays_deferred_at_night():
+    create, _ = _stub_chatwoot()
+    c = _ms_client(NIGHT)
+    j = {"order_id": "LGS-24021", "milestone": "at_pickup"}
+    c.post("/logisly/milestone", json=j, headers=H)
+    again = c.post("/logisly/milestone", json=j, headers=H).json()
+    assert again["deferred"] is True and create.call_count == 0

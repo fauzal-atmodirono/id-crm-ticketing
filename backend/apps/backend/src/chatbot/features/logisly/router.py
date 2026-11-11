@@ -7,6 +7,11 @@ conversation so the driver agent knows which trip the replies are about
 (`trips.context_for_session`). `GET /logisly/console` is a one-page operator
 view for running the demo.
 
+`POST /logisly/milestone` moves a trip and opens the checklist conversation.
+A move during quiet hours (or one whose Chatwoot call failed) is applied but
+leaves `trip["pending_notify"]`, so re-posting the same milestone (in the
+daytime, or with `force`) sends the owed message instead of being a no-op.
+
 Mounted only when AGENT_PERSONA=logisly. Every route but the console page
 needs the backend API key; the page itself holds no secret and sends the key
 the operator opens it with (`?key=`), because on the local tenant
@@ -211,8 +216,13 @@ def build_logisly_router(  # noqa: PLR0915 - one closure holds every route
             "not_ok": [],
         }
         if trip.get("milestone") == body.milestone:
-            return result  # already there: nothing to apply, nothing to tell the driver
-        trip = TRIPS.set_milestone(order_id, body.milestone, body.source) or trip
+            # Already there. Only a message still owed to the driver (deferred at
+            # night, or the Chatwoot call failed) or an explicit force re-sends;
+            # the milestone itself is not applied again.
+            if not (body.force or trip.get("pending_notify") == body.milestone):
+                return result
+        else:
+            trip = TRIPS.set_milestone(order_id, body.milestone, body.source) or trip
         not_ok = [
             i.id
             for i in milestones.checklist_for(trip, body.milestone)
@@ -221,6 +231,7 @@ def build_logisly_router(  # noqa: PLR0915 - one closure holds every route
         result["not_ok"] = not_ok
         if milestones.is_quiet(clock()) and not body.force:
             result["deferred"] = True  # applied, but the driver is not disturbed
+            trip["pending_notify"] = body.milestone
             return result
         message = milestones.opening_message(trip, body.milestone)
         if message is None and not_ok:
@@ -229,6 +240,7 @@ def build_logisly_router(  # noqa: PLR0915 - one closure holds every route
                 f"{milestone_label(body.milestone)}. Terima kasih."
             )
         if message is None:
+            trip.pop("pending_notify", None)
             return result
         try:
             contact_id, inbox_id, source_id = await driver_address(
@@ -239,9 +251,11 @@ def build_logisly_router(  # noqa: PLR0915 - one closure holds every route
                 contact_id, inbox_id, source_id, message
             )
         except httpx.HTTPError as exc:
-            # The milestone change above stays applied.
+            # The milestone change above stays applied; a re-post re-sends.
+            trip["pending_notify"] = body.milestone
             _log.warning("logisly_milestone_chatwoot_failed", order_id=order_id, error=str(exc))
             raise HTTPException(status_code=502, detail="Chatwoot call failed") from exc
+        trip.pop("pending_notify", None)
         session_id = f"crm-{conversation_id}"
         register_session(
             session_id, order_id, f"milestone:{body.milestone}", message, body.milestone

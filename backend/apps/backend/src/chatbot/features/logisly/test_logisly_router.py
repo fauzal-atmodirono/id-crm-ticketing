@@ -300,3 +300,10 @@ def test_deferred_resend_without_force_stays_deferred_at_night():
     c.post("/logisly/milestone", json=j, headers=H)
     again = c.post("/logisly/milestone", json=j, headers=H).json()
     assert again["deferred"] is True and create.call_count == 0
+
+
+def test_console_keeps_current_milestone_and_renders_422_details():
+    page = _client(_settings()).get("/logisly/console").text
+    assert 'data-cur="' in page  # selects remember the milestone they were rendered with
+    assert "activeElement" in page  # the 4s refresh pauses while a select is open
+    assert "errText" in page and ".msg" in page  # 422 detail arrays render their messages

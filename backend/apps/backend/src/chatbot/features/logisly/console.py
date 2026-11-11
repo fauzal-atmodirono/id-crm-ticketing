@@ -96,10 +96,13 @@ const controls = t => {
   return `<div class="ms">
     <button data-order="${o}" data-ms="${esc(next)}" data-src="gps"${dis}>Next milestone (GPS)</button>
     <button data-order="${o}" data-ms="${esc(next)}" data-src="app"${dis}>Next milestone (App)</button>
-    <select id="sel-${o}" aria-label="Milestone for ${o}">${milestones.map(m => `<option value="${esc(m[0])}"${m[0] === t.milestone ? " selected" : ""}>${esc(m[1])}</option>`).join("")}</select>
+    <select id="sel-${o}" data-cur="${esc(t.milestone)}" aria-label="Milestone for ${o}">${milestones.map(m => `<option value="${esc(m[0])}"${m[0] === t.milestone ? " selected" : ""}>${esc(m[1])}</option>`).join("")}</select>
     <button data-order="${o}" data-set="1">Set</button>
     <label><input type="checkbox" id="force-${o}"> Force (ignore quiet hours)</label></div>`;
 };
+// FastAPI 422s carry a list of {loc, msg, type}; show the messages, not [object Object].
+const errText = (d, status) => Array.isArray(d.detail)
+  ? d.detail.map(x => x.msg || JSON.stringify(x)).join("; ") : (d.detail || status);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
 async function load() {
@@ -108,8 +111,12 @@ async function load() {
   const data = await r.json();
   anomalies = data.anomalies;
   milestones = data.milestones || [];
-  const keep = {};  // preserve operator input across the 4s refresh
-  box.querySelectorAll("select[id^=sel-]").forEach(e => keep[e.id] = e.value);
+  // Preserve operator input across the 4s refresh. A milestone select is kept
+  // only if the operator changed it (value differs from the milestone it was
+  // rendered with); otherwise it follows the trip, so Set after Next can't
+  // move the trip back to a stale milestone.
+  const keep = {};
+  box.querySelectorAll("select[id^=sel-]").forEach(e => { if (e.value !== e.dataset.cur) keep[e.id] = e.value; });
   box.querySelectorAll("input[id^=force-]").forEach(e => keep[e.id] = e.checked);
   document.getElementById("ladder").textContent = data.no_reply_call_seconds
     ? `No reply in ${data.no_reply_call_seconds}s → the agent calls the driver app → not answered → ticket for operations.`
@@ -148,7 +155,7 @@ box.addEventListener("click", async ev => {
           force: document.getElementById("force-" + o).checked }) });
       const d = await r.json();
       const bad = (d.not_ok || []).length ? ` Not OK: ${d.not_ok.join(", ")}.` : "";
-      msg.textContent = !r.ok ? `Failed: ${d.detail || r.status}`
+      msg.textContent = !r.ok ? `Failed: ${errText(d, r.status)}`
         : d.sent ? `Sent to driver (conversation #${d.conversation_id}): "${d.message}"${bad}`
         : d.deferred ? `Milestone diperbarui, pesan ditunda — jam istirahat.${bad}`
         : `Milestone diperbarui, tidak ada pesan.${bad}`;
@@ -164,14 +171,21 @@ box.addEventListener("click", async ev => {
       headers: { "Content-Type": "application/json", "X-API-Key": key },
       body: JSON.stringify(payload) });
     const d = await r.json();
-    msg.textContent = !r.ok ? `Failed: ${d.detail || r.status}`
+    msg.textContent = !r.ok ? `Failed: ${errText(d, r.status)}`
       : b.dataset.call ? "Ringing the driver app…"
       : `Sent to driver via ${d.channel === "app" ? "driver app" : "WhatsApp"} (conversation #${d.conversation_id}): "${d.message}"`;
   } catch (e) { msg.textContent = "Failed: " + e; }
   b.disabled = false; load();
 });
 
-load(); setInterval(load, 4000);
+// Re-rendering replaces an open select under the operator's cursor; skip the
+// refresh while one in the trip list has focus.
+const tick = () => {
+  const a = document.activeElement;
+  if (a && a.tagName === "SELECT" && box.contains(a)) return;
+  load();
+};
+load(); setInterval(tick, 4000);
 </script>
 </body>
 </html>

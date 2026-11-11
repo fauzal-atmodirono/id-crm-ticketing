@@ -136,3 +136,104 @@ def test_backlog_answer_key():
     tr = [t for t in bl["transitions"] if t["key"] == "LOG-3417"]
     assert tr and tr[0]["status"] == "Won't Do" and tr[0]["duplicate_of"] == "LOG-3412"
     assert any(u["key"] == "LOG-3412" for u in bl["updates"])
+
+
+def _backlog():
+    return json.loads((UC3 / "expected" / "backlog.json").read_text())
+
+
+def _calendar():
+    return yaml.safe_load((UC3 / "team" / "calendar.yaml").read_text())
+
+
+def _roster():
+    return yaml.safe_load((UC3 / "team" / "roster.yaml").read_text())
+
+
+def test_backlog_references_resolve():
+    conv, bl, snap = _conventions(), _backlog(), _by_key()
+    sprints = {s["name"] for s in _calendar()["sprints"]}
+    ids = {p["id"] for p in _roster()["people"]}
+    temp_ids = {c["temp_id"] for c in bl["creates"]}
+    known = temp_ids | set(snap)
+    items = bl["creates"] + bl["updates"]
+    for c in items:
+        if c.get("sprint"):
+            assert c["sprint"] in sprints, c
+        if c.get("assignee"):
+            assert c["assignee"] in ids, c
+        if c.get("epic"):
+            assert c["epic"] in known, c
+        for lk in (c.get("links") or []) + (c.get("add_links") or []):
+            assert lk["type"] in conv["link_types"], lk
+            assert lk["key"] in known, lk
+        if c.get("key"):
+            assert c["key"] in snap
+        assert set(c.get("components") or []) <= set(conv["components"])
+    for t in bl["transitions"]:
+        assert t["key"] in snap and t["duplicate_of"] in snap
+    s10 = next(c for c in bl["creates"] if c["temp_id"] == "S10")
+    assert s10["links"] == [{"type": "is blocked by", "key": "LOG-3405"}]
+    for i in _snapshot()["issues"]:
+        if i["sprint"]:
+            assert i["sprint"] in sprints
+        if i["assignee"]:
+            assert i["assignee"] in ids
+        for lk in i["links"]:
+            assert lk["type"] in conv["link_types"] and lk["key"] in snap
+
+
+def test_planted_dates():
+    by = _by_key()
+    assert by["LOG-3405"]["sprint"] == "Sprint 26.22"
+    assert by["LOG-3412"]["created"] == "2026-10-20"
+    assert by["LOG-3417"]["created"] == "2026-11-05"
+    for i in by.values():
+        assert i["updated"] >= max([i["created"]] + [c["created"] for c in i["comments"]]), i["key"]
+
+
+def test_docx_kpi_rows():
+    doc = Document(UC3 / "sources" / "01_request_milestone-follow-up.docx")
+    rows = [[c.text for c in r.cells] for t in doc.tables for r in t.rows]
+    assert ["Pertanyaan ke driver per trip", "18", "6"] in rows
+    assert ["Kasus terlambat terdeteksi sebelum muat", "40%", "80%"] in rows
+
+
+def test_chat_not_before_request_date():
+    doc = Document(UC3 / "sources" / "01_request_milestone-follow-up.docx")
+    assert any("Tanggal: 5 November 2026" in p.text for p in doc.paragraphs)
+    chat = (UC3 / "sources" / "04_ops-chat-export_ct-followup.txt").read_text()
+    # the first chat line that mentions the request is on or after the docx date
+    first = next(line for line in chat.splitlines() if "request milestone" in line)
+    assert first.startswith("[05/11/26") or first.startswith("[06/11/26")
+
+
+def test_roster_committed_matches_snapshot():
+    names = {p["id"]: p["name"] for p in _roster()["people"]}
+    derived: dict[str, dict[str, int]] = {}
+    for i in _snapshot()["issues"]:
+        if i["sprint"] and i["assignee"] and i["story_points"]:
+            per = derived.setdefault(i["sprint"], {})
+            per[names[i["assignee"]]] = per.get(names[i["assignee"]], 0) + i["story_points"]
+    assert _roster()["committed"] == derived
+
+
+def test_capacity_figures_match_backlog():
+    conv, bl = _conventions(), _backlog()
+    sprints = {s["name"] for s in _calendar()["sprints"]}
+    window = {"Sprint 26.22", "Sprint 26.23", "Sprint 26.24"}
+    assert window <= sprints
+    new = {"mobile": 0, "backend": 0, "frontend": 0}
+    for c in bl["creates"]:
+        if c["type"] == "Story" and c["sprint"] in window:
+            new[conv["components"][c["components"][0]]["team"]] += c["story_points"]
+    for u in bl["updates"]:  # existing stories enriched and planned inside the window
+        i = _by_key()[u["key"]]
+        if u.get("sprint") in window and i["story_points"]:
+            new[conv["components"][i["components"][0]]["team"]] += i["story_points"]
+    assert new == {"mobile": 3, "backend": 30, "frontend": 7}
+    report = (UC3 / "expected" / "consistency_report.md").read_text()
+    assert "LOG-3412 = 3 SP" in report
+    assert "5+5+5+5+3+2+2+3 = 30 SP" in report
+    assert "5+2 = 7 SP" in report
+    assert "(0+3)/69" in report and "(8+30)/69" in report and "(8+7)/30" in report

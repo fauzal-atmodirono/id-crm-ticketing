@@ -10,7 +10,7 @@ Kunci jawaban demo. Ini temuan yang seharusnya dilaporkan agent setelah membaca 
 | 2 | **18 Desember adalah hari terakhir sebelum code freeze** (21 Desember 2026 s.d. 3 Januari 2027, hanya hotfix P0). Tidak ada ruang perbaikan setelahnya. | 02 notes, calendar | Selesaikan UAT di Sprint 26.24 dan siapkan hotfix P0 saja setelah rilis. | Nadia |
 | 3 | **Tenggat shipper 31 Desember 2026 jatuh di masa freeze.** PT Sinar Pangan Nusantara minta update bongkar dan POD rutin sebelum 31 Desember 2026. Fitur ini hanya membuat tiket MM dan pengingat ke driver, tidak mengirim notifikasi ke shipper. | 03 email, 02 notes | Pastikan live 18 Desember. Tanyakan apakah tiket MM dan POD di LOG-3412 cukup. | Sari, Nadia |
 | 4 | **Jam tenang berbeda.** Request Ops: 21:00–06:00. Product sync (dan fitur UC1 yang sudah dibangun): 22:00–05:00 WIB. | 01 request, 02 notes | 22:00–05:00 WIB. | Hadi |
-| 5 | **Trigger milestone otomatis bergantung ke LOG-3405** (geofence, In Progress, Sprint 26.22). | 02 notes, LOG-3405 | Pilot jalan dengan milestone manual atau dari app; story trigger GPS diberi link ke LOG-3405. | Agung |
+| 5 | **Trigger milestone otomatis bergantung ke LOG-3405** (geofence, In Progress, Sprint 26.22). | 02 notes, LOG-3405 | Pilot jalan dengan milestone manual atau dari app; story trigger GPS diberi link `is blocked by` ke LOG-3405. | Agung |
 | 6 | **SOP Shopee: fase 1 atau 2?** Request menyebut Shopee sebagai catatan, product sync memutuskan fase 2 (Sprint 27.01, setelah freeze). | 01 request, 02 notes | Fase 2, story dengan label `phase-2`. | Hadi |
 
 ## Duplikat dan issue yang perlu diperbarui
@@ -31,12 +31,12 @@ Kunci jawaban demo. Ini temuan yang seharusnya dilaporkan agent setelah membaca 
 
 ## Kapasitas (Sprint 26.22 s.d. 26.24, sebelum freeze)
 
-Kapasitas per tim = jumlah capacity_sp per sprint x 3 sprint. Terpakai = `committed` di roster.
+Kapasitas per tim = jumlah capacity_sp per sprint x 3 sprint. Terpakai = `committed` di roster, yang sama dengan jumlah SP issue snapshot per orang per sprint (Sprint 26.22: LOG-3405 8 SP Agung; LOG-3403 5 SP + LOG-3409 3 SP Laras).
 
 | Tim | Kapasitas | Sudah terpakai | Sisa | Usulan pekerjaan baru | Utilisasi |
 |---|---|---|---|---|---|
-| Mobile (Rizky, Bayu) | 69 SP | 24 SP | 45 SP | LOG-3412 = 3 SP | 39% |
-| Backend (Agung, Fikri) | 69 SP | 18 SP | 51 SP | 5+5+5+5+3+2+2+3 = 30 SP (fase 1) | 70% |
-| Frontend (Laras) | 30 SP | 13 SP | 17 SP | 5+2 = 7 SP | 67% |
+| Mobile (Rizky, Bayu) | 69 SP | 0 SP | 69 SP | LOG-3412 = 3 SP | 4% |
+| Backend (Agung, Fikri) | 69 SP | 8 SP | 61 SP | 5+5+5+5+3+2+2+3 = 30 SP (fase 1) | 55% |
+| Frontend (Laras) | 30 SP | 8 SP | 22 SP | 5+2 = 7 SP | 50% |
 
-Utilisasi = (terpakai + baru) / kapasitas, jadi mobile (24+3)/69, backend (18+30)/69, frontend (13+7)/30. Semua muat. Story SOP Shopee (5 SP, Sprint 27.01) di luar jendela ini. Rizky cuti 21-31 Desember, jatuh di masa freeze, jadi tidak mengurangi kapasitas sebelum rilis.
+Utilisasi = (terpakai + baru) / kapasitas, jadi mobile (0+3)/69, backend (8+30)/69, frontend (8+7)/30. Semua muat. Story SOP Shopee (S11, 5 SP, Sprint 27.01, fase 2) di luar jendela ini dan sengaja tidak masuk tabel Stories di PRD. Rizky cuti 21-31 Desember, jatuh di masa freeze, jadi tidak mengurangi kapasitas sebelum rilis.

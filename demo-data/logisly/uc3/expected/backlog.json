@@ -1,5 +1,5 @@
 {
-  "note": "Answer key: the Jira changes the UC3 agent should propose (and, after approval, apply). Shape matches propose_changes(creates, updates, transitions). temp_id E1 is the Epic; stories reference it via epic. Story points match consistency_report.md.",
+  "note": "Answer key: the Jira changes the UC3 agent should propose (and, after approval, apply). Shape matches propose_changes(creates, updates, transitions). temp_id E1 is the Epic; stories reference it via epic. Story points match consistency_report.md. S11 (Shopee SOP, phase 2, Sprint 27.01) is intentionally outside the PRD Stories table; the PRD only lists phase 1.",
   "creates": [
     {
       "temp_id": "E1",
@@ -231,7 +231,7 @@
       "epic": "E1",
       "links": [
         {
-          "type": "relates to",
+          "type": "is blocked by",
           "key": "LOG-3405"
         }
       ]

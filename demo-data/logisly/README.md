@@ -2,7 +2,7 @@
 
 Mock data for the Logisly use case 2 (pricing & quotation filtering) and use
 case 3 (Product Manager agent) demos. Everything here is fictional: companies,
-people, plates, prices and GitHub issues. The three shippers named in UC1's
+people, plates, prices and Jira issues. The three shippers named in UC1's
 trips (`features/logisly/trips.py`) reappear here so the three demos read as
 one Logisly. Replace with Logisly's anonymised samples once they send them
 (MOM 29 Oct 2026, section 6).

@@ -1,6 +1,6 @@
 # Logisly product & engineering team (fictional). capacity_sp = story points
 # per two-week sprint at full availability. committed = points already taken
-# by existing issues (see jira/issues_snapshot.json). id = the Jira assignee
+# by existing issues (see jira/issues_snapshot.json; a test keeps the two in sync). id = the Jira assignee
 # value; components decide which team (mobile/backend/frontend) a person counts in.
 people:
   - {id: nadia-p,   name: "Nadia Putri",     role: "Product Manager"}
@@ -18,6 +18,5 @@ stakeholders:
   - {name: "Sari Indah",   role: "Customer Success Lead"}
   - {name: "Dimas Ops",    role: "Ops Coordinator (CT)"}
 
-committed:   # points already planned per sprint from the existing backlog
-  "Sprint 26.22": {Rizky Ramadhan: 8, Bayu Pratama: 8, Agung Setiawan: 8, Fikri Hakim: 5, Laras Ayu: 8}
-  "Sprint 26.23": {Rizky Ramadhan: 5, Bayu Pratama: 3, Agung Setiawan: 5, Laras Ayu: 5}
+committed:   # derived from jira/issues_snapshot.json: sum of story points per person per sprint
+  "Sprint 26.22": {Agung Setiawan: 8, Laras Ayu: 8}

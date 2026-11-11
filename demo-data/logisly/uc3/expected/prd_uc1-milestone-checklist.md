@@ -31,7 +31,7 @@
 Goals:
 1. Kurangi pertanyaan ke driver per trip dari 18 menjadi 6 (turun 67%). Rumus: Number of pertanyaan agent ke driver / number of trip.
 2. Naikkan kasus terlambat yang terdeteksi sebelum muat dari 40% menjadi 80%. Rumus: Number of kasus terlambat terdeteksi sebelum muat / number of kasus terlambat.
-3. Setiap item tidak OK menjadi tiket ke tim yang tepat. Rumus: Number of item tidak OK dengan tiket bertim / number of item tidak OK.
+3. Setiap item tidak OK menjadi tiket ke tim yang tepat (target % belum ditetapkan, lihat Pertanyaan terbuka). Rumus: Number of item tidak OK dengan tiket bertim / number of item tidak OK.
 
 | Group | Current | Proposed |
 |---|---|---|
@@ -136,3 +136,4 @@ TBD. Console menampilkan stepper milestone dan checklist per trip dengan sumber 
 3. Apakah shipper (PT Sinar Pangan Nusantara) akan menerima notifikasi bongkar, atau cukup tiket ke MM? Fitur ini tidak mengirim pesan ke shipper. Yang memutuskan: Sari Indah dan Nadia Putri.
 4. Target penurunan biaya WhatsApp belum ada; baseline Rp 38 juta/bulan. Yang memutuskan: Hadi Pranoto, data dari Wulan Sari.
 5. Tenggat 31 Desember 2026 jatuh di masa code freeze (21 Desember 2026 s.d. 3 Januari 2027). Apakah cukup kalau live 18 Desember? Yang memutuskan: Sari Indah.
+6. Target persentase item tidak OK yang menjadi tiket bertim belum ada di sumber manapun. Yang memutuskan: Hadi Pranoto.

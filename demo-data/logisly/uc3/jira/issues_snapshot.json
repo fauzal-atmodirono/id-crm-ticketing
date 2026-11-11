@@ -78,7 +78,7 @@
         }
       ],
       "created": "2026-08-18",
-      "updated": "2026-09-12"
+      "updated": "2026-11-05"
     },
     {
       "key": "LOG-3400",
@@ -216,8 +216,8 @@
       ],
       "labels": [],
       "story_points": 3,
-      "sprint": null,
-      "assignee": null,
+      "sprint": "Sprint 26.22",
+      "assignee": "laras-a",
       "epic": null,
       "links": [],
       "comments": [],

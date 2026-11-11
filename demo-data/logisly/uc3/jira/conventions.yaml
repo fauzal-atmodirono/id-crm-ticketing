@@ -5,7 +5,8 @@ project: {key: LOG, name: "Logisly Platform"}
 issue_types: [Epic, Story, Task, Bug]
 statuses: ["To Do", "In Progress", "Done", "Won't Do"]
 resolutions: [Done, Duplicate, "Won't Do"]
-link_types: [duplicates, blocks, "relates to"]
+# a link {type, key} on issue X reads "X <type> key"
+link_types: [duplicates, blocks, "is blocked by", "relates to"]
 
 components:
   "Driver App":      {owner: "Rizky Ramadhan", team: mobile}

@@ -34,7 +34,7 @@ def request_doc() -> None:
     doc.styles["Normal"].font.name = "Arial"
     doc.styles["Normal"].font.size = Pt(10.5)
     doc.add_heading("Request: Follow-up driver per milestone", level=1)
-    doc.add_paragraph("Dari: Hadi Pranoto (Head of Operations)\nKepada: Nadia Putri (Product)\nTanggal: 6 November 2026")
+    doc.add_paragraph("Dari: Hadi Pranoto (Head of Operations)\nKepada: Nadia Putri (Product)\nTanggal: 5 November 2026")
 
     doc.add_heading("Latar belakang", level=2)
     doc.add_paragraph(

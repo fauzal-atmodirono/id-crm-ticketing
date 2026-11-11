@@ -53,3 +53,10 @@ def test_describe_skips_system_events_and_has_no_trailing_space():
     text = trips.describe(trips.TRIPS.get("LGS-24017"))
     assert "Update terakhir dari driver: Sudah jalan dari pool. (on_trip)" in text
     assert not any(line.endswith(" ") for line in text.splitlines())
+
+
+def test_seed_status_and_position_match_the_milestone():
+    pre = trips.TRIPS.get("LGS-24017")
+    assert pre["milestone"] == "assigned" and pre["status"] == "to_pickup"
+    assert "Tol" not in pre["location"]
+    assert trips.TRIPS.get("LGS-24033")["status"] == "on_trip"

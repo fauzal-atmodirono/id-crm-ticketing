@@ -21,6 +21,7 @@ create duplicates.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Literal
@@ -295,8 +296,10 @@ def opening_message(trip: dict, milestone: str) -> str | None:
     asks = [i.ask for i in open_items(trip, milestone)[:2]]
     if not fixes and not asks:
         return None
+    # Seed names already carry the honorific ("Pak Agus"); don't say "Pak Pak".
+    name = re.sub(r"(?i)^pak\s+", "", trip.get("driver_name", ""))
     greeting = (
-        f"Selamat {_greeting_time()} Pak {trip.get('driver_name', '')}, "
+        f"Selamat {_greeting_time()} Pak {name}, "
         f"saya dari Logisly untuk order {trip.get('order_id', '')} ({_LABELS.get(milestone, milestone)})."
     )
     return "\n".join([greeting, *fixes, *asks])

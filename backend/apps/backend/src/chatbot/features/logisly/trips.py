@@ -24,7 +24,7 @@ _APP_LINK = "https://logisly.example/driver-app"
 _SEED: list[dict[str, Any]] = [
     {
         "order_id": "LGS-24017",
-        "location": "Tol Cipali KM 102",
+        "location": "Pool Cikarang",
         "driver_name": "Pak Budi Santoso",
         "plate": "B 9123 KXT",
         "truck_type": "CDD Box",
@@ -42,7 +42,7 @@ _SEED: list[dict[str, Any]] = [
         "driver_app_link": _APP_LINK,
         "rad": "2026-11-06 08:00 WIB",
         "eta": "2026-11-06 17:00 WIB",
-        "status": "on_trip",
+        "status": "to_pickup",
     },
     {
         "order_id": "LGS-24021",
@@ -93,7 +93,7 @@ _SEED: list[dict[str, Any]] = [
         "driver_app_link": _APP_LINK,
         "rad": "2026-11-06 13:00 WIB",
         "eta": "2026-11-06 13:00 WIB",
-        "status": "arrived",
+        "status": "on_trip",
     },
 ]
 

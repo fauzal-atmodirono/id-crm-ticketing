@@ -58,7 +58,7 @@ def test_trip_store_lookup_is_case_insensitive_and_records_events():
 def test_unknown_status_is_logged_but_does_not_change_status():
     store = TripStore.seeded()
     trip = store.update("LGS-24017", "teleported", "x")
-    assert trip["status"] == "on_trip" and trip["events"][-1]["status"] == "teleported"
+    assert trip["status"] == "to_pickup" and trip["events"][-1]["status"] == "teleported"
 
 
 def test_ambiguous_problems_get_one_question_before_escalation():

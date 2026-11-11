@@ -91,11 +91,11 @@ def test_anomaly_opens_conversation_and_registers_trip_context():
         and b"LGS-24017" in sent
         and b'"pending"' in sent
     )
-    assert b"di sekitar Tol Cipali KM 102" in sent
+    assert b"di sekitar Pool Cikarang" in sent
     ctx = trips.context_for_session("crm-22")
     assert "LGS-24017" in ctx and "Do not ask for the order number" in ctx
     assert trips.TRIPS.get("LGS-24017")["events"][-1]["status"] == "alert:gps_stop"
-    assert trips.TRIPS.get("LGS-24017")["status"] == "on_trip"
+    assert trips.TRIPS.get("LGS-24017")["status"] == "to_pickup"  # an alert keeps the status
 
 
 def test_anomaly_validates_order_kind_and_configuration():

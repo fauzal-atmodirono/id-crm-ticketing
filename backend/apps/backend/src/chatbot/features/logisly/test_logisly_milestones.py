@@ -125,3 +125,13 @@ def test_is_quiet():
     assert m.is_quiet(d(4, 59))
     assert not m.is_quiet(d(5, 0))
     assert not m.is_quiet(d(21, 59))
+
+
+def test_greeting_does_not_double_the_honorific():
+    trip = {"order_id": "LGS-1", "driver_name": "Pak Agus Wibowo", "shipper_kind": "fmcg"}
+    text = m.opening_message(trip, "assigned")
+    assert "Pak Agus Wibowo," in text and "Pak Pak" not in text
+    trip["driver_name"] = "pak Budi"
+    assert "Pak Budi," in m.opening_message(trip, "assigned")
+    trip["driver_name"] = "Pakde Joko"
+    assert "Pak Pakde Joko," in m.opening_message(trip, "assigned")

@@ -28,17 +28,17 @@ a trip and opens the driver conversation (app or WhatsApp).
 
 | Order | Driver / shipper | Starts at | Scenario |
 |---|---|---|---|
-| LGS-24017 | Pak Budi Santoso, FMCG | `assigned` | Clean trip: plate matches, locations are in the app. Only the driver-confirmation items are open. |
+| LGS-24017 | Pak Budi Santoso, FMCG | `assigned` | Clean trip: plate matches, locations are in the app. Exactly one item is open: Unit kosong (`unit_empty`, asked of the driver). |
 | LGS-24021 | Pak Agus Wibowo, Shopee | `to_pickup` | Problem trip: driver app not active, not on site at the Shopee gate, DO not in the app. Moving it to `at_pickup` carries the install link and a photo ask, and the DO gap goes to the allocation team as a routed ticket. |
-| LGS-24033 | Pak Dedi Kurniawan, FMCG | `in_transit` | Checkpoint trip: ETA is past the RAD, so the next move shows a system item not OK. |
+| LGS-24033 | Pak Dedi Kurniawan, FMCG | `in_transit` | Checkpoint trip: the ETA-within-RAD fact is false, so that system item already shows not OK when the console opens (set at seed). Moving on to `at_drop` reports no system item not OK, because `unloading_registered` is Shopee-only. |
 
 **Demo script (about 6 minutes):**
 1. Open the console. All three trips show their current milestone and checklist.
-2. Move LGS-24021 to "Di lokasi muat" (`at_pickup`). The opening message carries the driver-app install link and asks for a photo of the unit with its plate.
+2. Move LGS-24021 to "Di lokasi muat" (`at_pickup`). Between 22:00 and 05:00 WIB the move is deferred and nothing is sent, so run this in the daytime or tick "Force (ignore quiet hours)". The opening message carries the driver-app install link and asks for a photo of the unit with its plate.
 3. As the driver, reply "sya blum bisa login". The agent re-sends the install link and the login steps instead of ticking anything.
 4. Send a photo of the plate. The `unit_photo` item turns ticked in the console.
-5. Point at the ticket list: "DO not in app" is filed to the allocation team (`alloc`), not to the generic support queue, with the order id and driver.
-6. Move LGS-24033 to its next milestone to show the ETA-versus-RAD checkpoint. Then show quiet hours: between 22:00 and 05:00 WIB a move is applied but the driver is not messaged (the response says `deferred`). Tick "Force (ignore quiet hours)" to override.
+5. Open the driver conversation in Chatwoot. "DO not in app" is a private note labelled `team-alloc` on that conversation, filed only when the opening message is actually sent (not on a deferred move).
+6. Show LGS-24033: its ETA-within-RAD item is already not OK in the console; moving it to `at_drop` applies the milestone with no new system item failing. Then show quiet hours: between 22:00 and 05:00 WIB a move is applied but the driver is not messaged (the response says `deferred`). Tick "Force (ignore quiet hours)" to override.
 
 If Chatwoot is unreachable the move still applies and the API answers 502; with no
 driver channel configured it answers 503.

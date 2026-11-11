@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import httpx
@@ -6,7 +7,7 @@ import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from chatbot.features.logisly import trips
+from chatbot.features.logisly import escalation, milestones, trips
 from chatbot.features.logisly.channel import ChatwootDriverChannel
 from chatbot.features.logisly.router import build_logisly_router
 
@@ -39,6 +40,8 @@ def _fresh_state(monkeypatch):
     monkeypatch.setattr(trips, "TRIPS", trips.TripStore.seeded())
     monkeypatch.setattr("chatbot.features.logisly.router.TRIPS", trips.TRIPS)
     trips.ACTIVE_SESSIONS.clear()
+    milestones.PENDING_TICKETS.clear()
+    escalation._COMPLETE_NOTED.clear()
 
 
 def test_routes_need_the_api_key_but_console_does_not():
@@ -131,3 +134,117 @@ async def test_contact_is_created_when_phone_not_found():
     )
     channel = ChatwootDriverChannel(_settings())
     assert await channel.find_or_create_contact("+6281100001111", "Pak Budi") == 77
+
+
+DAY = datetime(2026, 11, 11, 3, 0, tzinfo=UTC)  # 10:00 WIB
+NIGHT = datetime(2026, 11, 11, 16, 0, tzinfo=UTC)  # 23:00 WIB
+H = {"X-API-Key": "k"}
+
+
+def _ms_client(at=DAY):
+    app = FastAPI()
+    app.include_router(build_logisly_router(_settings(), now=lambda: at))
+    return TestClient(app)
+
+
+def _stub_chatwoot():
+    respx.get(f"{CW}/contacts/search").mock(
+        return_value=httpx.Response(
+            200, json={"payload": [{"id": 13, "phone_number": "+6281100001111"}]}
+        )
+    )
+    respx.get(f"{CW}/contacts/13/conversations").mock(
+        return_value=httpx.Response(200, json={"payload": []})
+    )
+    create = respx.post(f"{CW}/conversations").mock(
+        return_value=httpx.Response(200, json={"id": 30})
+    )
+    note = respx.post(f"{CW}/conversations/30/messages").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx.get(f"{CW}/conversations/30/labels").mock(
+        return_value=httpx.Response(200, json={"payload": []})
+    )
+    respx.post(f"{CW}/conversations/30/labels").mock(return_value=httpx.Response(200, json={}))
+    respx.patch(f"{CW}/conversations/30").mock(return_value=httpx.Response(200, json={}))
+    respx.post(f"{CW}/conversations/30/toggle_priority").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    return create, note
+
+
+@respx.mock
+def test_milestone_opens_conversation_with_only_open_items():
+    create, note = _stub_chatwoot()
+    r = _ms_client().post(
+        "/logisly/milestone", json={"order_id": "LGS-24021", "milestone": "at_pickup"}, headers=H
+    )
+    body = r.json()
+    assert r.status_code == 200 and body["sent"] and body["conversation_id"] == 30
+    assert {"driver_app", "do_in_app"} <= set(body["not_ok"])
+    sent = create.calls.last.request.content
+    assert b"logisly.example/driver-app" in sent and b"foto unit" in sent
+    assert any(
+        b"team-alloc" in c.request.content for c in respx.calls if c.request.method == "POST"
+    )
+    assert any(b"private" in c.request.content for c in note.calls)
+    assert trips.context_for_session("crm-30")
+
+
+@respx.mock
+def test_same_milestone_twice_sends_once():
+    create, _ = _stub_chatwoot()
+    c = _ms_client()
+    j = {"order_id": "LGS-24021", "milestone": "at_pickup"}
+    assert c.post("/logisly/milestone", json=j, headers=H).json()["sent"] is True
+    again = c.post("/logisly/milestone", json=j, headers=H).json()
+    assert again["sent"] is False and again["deferred"] is False
+    assert create.call_count == 1
+
+
+@respx.mock
+def test_quiet_hours_defer_unless_forced():
+    create, _ = _stub_chatwoot()
+    c = _ms_client(NIGHT)
+    j = {"order_id": "LGS-24021", "milestone": "at_pickup"}
+    r = c.post("/logisly/milestone", json=j, headers=H).json()
+    assert r["deferred"] is True and r["sent"] is False and create.call_count == 0
+    assert trips.TRIPS.get("LGS-24021")["milestone"] == "at_pickup"
+    forced = _ms_client(NIGHT).post(
+        "/logisly/milestone",
+        json={"order_id": "LGS-24033", "milestone": "at_drop", "force": True},
+        headers=H,
+    )
+    assert forced.json()["sent"] is True
+
+
+@respx.mock
+def test_nothing_open_sends_nothing():
+    create, _ = _stub_chatwoot()
+    trip = trips.TRIPS.get("LGS-24017")
+    for item in milestones.CHECKLISTS["to_pickup"]:
+        milestones.record_item(trip, "to_pickup", item.id, True, "", "manual", None)
+    r = _ms_client().post(
+        "/logisly/milestone", json={"order_id": "LGS-24017", "milestone": "to_pickup"}, headers=H
+    )
+    assert r.status_code == 200 and r.json()["sent"] is False and create.call_count == 0
+
+
+def test_milestone_validates_order_and_code():
+    c = _ms_client()
+    assert (
+        c.post(
+            "/logisly/milestone", json={"order_id": "LGS-0", "milestone": "at_drop"}, headers=H
+        ).status_code
+        == 404
+    )
+    assert (
+        c.post(
+            "/logisly/milestone", json={"order_id": "LGS-24017", "milestone": "x"}, headers=H
+        ).status_code
+        == 422
+    )
+    assert c.get("/logisly/trips", headers=H).json()["milestones"][0] == [
+        "assigned",
+        "Pre check driver",
+    ]

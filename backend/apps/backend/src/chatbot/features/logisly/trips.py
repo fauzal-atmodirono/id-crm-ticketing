@@ -17,6 +17,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from chatbot.features.logisly import milestones
+
+_APP_LINK = "https://logisly.example/driver-app"
+
 _SEED: list[dict[str, Any]] = [
     {
         "order_id": "LGS-24017",
@@ -28,7 +32,15 @@ _SEED: list[dict[str, Any]] = [
         "destination": "DC Semarang, Jawa Tengah",
         "consignee": "PT Sumber Pangan Nusantara",
         "cargo": "Makanan kemasan, 420 karton",
-        "milestone": "Dalam perjalanan (Tol Cipali)",
+        "shipper": "PT Sumber Pangan Nusantara (FMCG)",
+        "shipper_kind": "fmcg",
+        "milestone": "assigned",
+        "facts": {"plate_matches": True, "locations_in_app": True},
+        "do_weight": "8 ton",
+        "dts_number": "DTS-240170",
+        "load_map_link": "https://maps.example/muat-cikarang",
+        "driver_app_link": _APP_LINK,
+        "rad": "2026-11-06 08:00 WIB",
         "eta": "2026-11-06 17:00 WIB",
         "status": "on_trip",
     },
@@ -42,7 +54,22 @@ _SEED: list[dict[str, Any]] = [
         "destination": "Gudang Surabaya Rungkut",
         "consignee": "PT Elektronik Jaya Abadi",
         "cargo": "Peralatan elektronik, 36 palet",
-        "milestone": "Menuju titik muat",
+        "shipper": "Shopee (gudang Karawang)",
+        "shipper_kind": "shopee",
+        "milestone": "to_pickup",
+        "facts": {
+            "plate_matches": True,
+            "locations_in_app": True,
+            "shopee_driver_id_active": True,
+            "shopee_onsite": False,
+            "driver_app_active": False,
+            "do_in_app": False,
+        },
+        "do_weight": "15 ton",
+        "dts_number": "DTS-240210",
+        "load_map_link": "https://maps.example/muat-karawang",
+        "driver_app_link": _APP_LINK,
+        "rad": "2026-11-07 09:00 WIB",
         "eta": "2026-11-07 09:00 WIB",
         "status": "to_pickup",
     },
@@ -56,7 +83,15 @@ _SEED: list[dict[str, Any]] = [
         "destination": "Toko Mitra, Bandung",
         "consignee": "CV Berkah Retail",
         "cargo": "Minuman botol, 180 karton",
-        "milestone": "Tiba di tujuan, menunggu bongkar",
+        "shipper": "DC Cibitung (FMCG)",
+        "shipper_kind": "fmcg",
+        "milestone": "in_transit",
+        "facts": {"drop_address_matches_pf": True, "eta_within_rad": False},
+        "do_weight": "5 ton",
+        "dts_number": "DTS-240330",
+        "load_map_link": "https://maps.example/muat-cibitung",
+        "driver_app_link": _APP_LINK,
+        "rad": "2026-11-06 13:00 WIB",
         "eta": "2026-11-06 13:00 WIB",
         "status": "arrived",
     },
@@ -74,6 +109,8 @@ class TripStore:
         store = cls()
         for trip in copy.deepcopy(_SEED):
             trip["events"] = []
+            trip["checklists"] = {}
+            milestones.apply_system_checks(trip, trip["milestone"])
             store.trips[trip["order_id"]] = trip
         return store
 
@@ -95,6 +132,26 @@ class TripStore:
         return trip
 
 
+    def set_milestone(self, order_id: str, milestone: str, source: str) -> dict[str, Any] | None:
+        trip = self.get(order_id)
+        if trip is None or milestone not in dict(milestones.MILESTONES):
+            return None
+        trip["milestone"] = milestone
+        trip["events"].append(
+            {
+                "at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "status": f"milestone:{milestone}",
+                "note": f"{milestone_label(milestone)} ({source})",
+            }
+        )
+        milestones.apply_system_checks(trip, milestone)
+        return trip
+
+
+def milestone_label(code: str) -> str:
+    return dict(milestones.MILESTONES).get(code, code)
+
+
 def describe(trip: dict[str, Any]) -> str:
     """Render a trip for the model: plain lines, no internal field names."""
     lines = [
@@ -103,10 +160,16 @@ def describe(trip: dict[str, Any]) -> str:
         f"Rute: {trip['origin']} -> {trip['destination']}",
         f"Penerima: {trip['consignee']}",
         f"Muatan: {trip['cargo']}",
-        f"Posisi terakhir: {trip['location']} ({trip['milestone']})",
+        f"Posisi terakhir: {trip['location']} ",
+        f"Milestone: {milestone_label(trip['milestone'])}",
         f"ETA: {trip['eta']}",
         f"Status: {trip['status']}",
     ]
+    for item in milestones.checklist_for(trip, trip["milestone"]):
+        rec = trip.get("checklists", {}).get(trip["milestone"], {}).get(item.id)
+        status = rec["status"] if rec else "pending"
+        value = f": {rec['value']}" if rec and rec.get("value") else ""
+        lines.append(f"- {item.id} ({item.source}): {status}{value}")
     if trip["events"]:
         last = trip["events"][-1]
         lines.append(f"Update terakhir dari driver: {last['note']} ({last['status']})")
@@ -156,7 +219,7 @@ def render(template: str, trip: dict[str, Any]) -> str:
         driver=trip["driver_name"],
         plate=trip["plate"],
         order_id=trip["order_id"],
-        milestone=trip["milestone"],
+        milestone=milestone_label(trip["milestone"]),
         location=trip["location"],
         eta=trip["eta"],
         origin=trip["origin"],
@@ -168,8 +231,15 @@ def render(template: str, trip: dict[str, Any]) -> str:
 ACTIVE_SESSIONS: dict[str, dict[str, Any]] = {}
 
 
-def register_session(session_id: str, order_id: str, anomaly: str, opening: str) -> None:
-    ACTIVE_SESSIONS[session_id] = {"order_id": order_id, "anomaly": anomaly, "opening": opening}
+def register_session(
+    session_id: str, order_id: str, anomaly: str, opening: str, milestone: str = ""
+) -> None:
+    ACTIVE_SESSIONS[session_id] = {
+        "order_id": order_id,
+        "anomaly": anomaly,
+        "opening": opening,
+        "milestone": milestone,
+    }
 
 
 def context_for_session(session_id: str) -> str:
@@ -186,11 +256,41 @@ def context_for_session(session_id: str) -> str:
     trip = TRIPS.get(active["order_id"])
     if trip is None:
         return ""
-    return (
+    milestone = active.get("milestone", "")
+    if milestone:
+        reason = (
+            f"the trip reached the milestone {milestone_label(milestone)} ({milestone}) "
+            "and its checklist must be completed"
+        )
+    else:
+        reason = f"the tracking system raised an alert ({ANOMALIES[active['anomaly']]['label']})"
+    text = (
         "## This conversation\n"
-        "You started this conversation because the tracking system raised an alert "
-        f"({ANOMALIES[active['anomaly']]['label']}). You already sent the driver this "
+        f"You started this conversation because {reason}. You already sent the driver this "
         f'WhatsApp message:\n"{active["opening"]}"\n'
         "The driver's messages are replies to it. Do not ask for the order number.\n\n"
         f"Trip:\n{describe(trip)}\n"
     )
+    if milestone:
+        text += _checklist_section(trip, milestone)
+    return text
+
+
+def _checklist_section(trip: dict[str, Any], milestone: str) -> str:
+    open_ = milestones.open_items(trip, milestone)
+    lines = ["\n## Checklist for this milestone"]
+    if open_:
+        lines.append("Still open (ask the driver only for these):")
+        lines += [f"- {i.id}: {i.ask}" for i in open_]
+    else:
+        lines.append("Every item is already done.")
+    lines += [
+        "\nFacts you can give the driver if they ask:",
+        f"- DO weight: {trip.get('do_weight', '-')}",
+        f"- DTS number: {trip.get('dts_number', '-')}",
+        f"- Load location map: {trip.get('load_map_link', '-')}",
+        f"- Driver app link: {trip.get('driver_app_link', '-')}",
+        "\nWhen the driver answers or sends a photo, tick the item with "
+        "record_checklist_tool. Do not ask about items that are already ok.",
+    ]
+    return "\n".join(lines) + "\n"

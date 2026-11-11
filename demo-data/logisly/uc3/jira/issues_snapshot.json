@@ -1,0 +1,360 @@
+{
+  "project": "LOG",
+  "snapshot_at": "2026-11-10T09:00:00+07:00",
+  "note": "Mock export of Logisly's Jira project LOG (subset of fields). Seeded into the mock Jira by the UC3 agent setup.",
+  "issues": [
+    {
+      "key": "LOG-3394",
+      "type": "Bug",
+      "summary": "Filter tanggal laporan di shipper portal tidak mengikuti zona waktu WIB",
+      "description": "Laporan trip yang selesai setelah 17:00 WIB muncul di tanggal berikutnya.",
+      "acceptance": [],
+      "status": "Done",
+      "resolution": "Done",
+      "components": [
+        "Shipper Portal"
+      ],
+      "labels": [],
+      "story_points": null,
+      "sprint": null,
+      "assignee": "laras-a",
+      "epic": null,
+      "links": [],
+      "comments": [],
+      "created": "2026-09-28",
+      "updated": "2026-10-08"
+    },
+    {
+      "key": "LOG-3397",
+      "type": "Story",
+      "summary": "[Data] As Data Analyst, I want a daily on-time delivery table per shipper so that Ops can review OTD every morning",
+      "description": "Tabel harian OTD per shipper dari data trip.",
+      "acceptance": [
+        "Tabel diperbarui sebelum 07:00 WIB",
+        "Bisa difilter per shipper dan per koridor"
+      ],
+      "status": "Done",
+      "resolution": "Done",
+      "components": [
+        "Data"
+      ],
+      "labels": [],
+      "story_points": 5,
+      "sprint": null,
+      "assignee": "wulan-s",
+      "epic": null,
+      "links": [],
+      "comments": [],
+      "created": "2026-09-30",
+      "updated": "2026-10-14"
+    },
+    {
+      "key": "LOG-3398",
+      "type": "Story",
+      "summary": "[BE] As CT, I want the bot to remind drivers on WhatsApp every 30 minutes during a trip so that we get location updates",
+      "description": "Bot WhatsApp mengirim pengingat lokasi tiap 30 menit selama trip berjalan, tanpa jam tenang.",
+      "acceptance": [
+        "Pengingat dikirim tiap 30 menit selama status trip aktif",
+        "Pengingat berhenti saat trip selesai"
+      ],
+      "status": "Done",
+      "resolution": "Done",
+      "components": [
+        "Platform"
+      ],
+      "labels": [
+        "whatsapp-cost"
+      ],
+      "story_points": 3,
+      "sprint": null,
+      "assignee": "fikri-h",
+      "epic": null,
+      "links": [],
+      "comments": [
+        {
+          "author": "dimas-ops",
+          "created": "2026-11-05",
+          "body": "Pengingat ini masih jalan jam 2 pagi dan driver komplain. Perlu diganti."
+        }
+      ],
+      "created": "2026-08-18",
+      "updated": "2026-09-12"
+    },
+    {
+      "key": "LOG-3400",
+      "type": "Bug",
+      "summary": "Crash saat login di driver app Android 8",
+      "description": "Driver dengan Android 8 tidak bisa login, aplikasi menutup sendiri.",
+      "acceptance": [],
+      "status": "To Do",
+      "resolution": null,
+      "components": [
+        "Driver App"
+      ],
+      "labels": [
+        "customer-request"
+      ],
+      "story_points": null,
+      "sprint": null,
+      "assignee": "bayu-p",
+      "epic": null,
+      "links": [],
+      "comments": [],
+      "created": "2026-10-12",
+      "updated": "2026-10-19"
+    },
+    {
+      "key": "LOG-3402",
+      "type": "Epic",
+      "summary": "GPS tracking v2",
+      "description": "Event geofence dan pelacakan posisi yang lebih akurat untuk status trip otomatis.",
+      "acceptance": [],
+      "status": "In Progress",
+      "resolution": null,
+      "components": [
+        "Platform"
+      ],
+      "labels": [],
+      "story_points": null,
+      "sprint": null,
+      "assignee": null,
+      "epic": null,
+      "links": [],
+      "comments": [],
+      "created": "2026-10-01",
+      "updated": "2026-11-03"
+    },
+    {
+      "key": "LOG-3403",
+      "type": "Story",
+      "summary": "[FE] As Shipper, I want to export my trip report to Excel so that I can reconcile deliveries each month",
+      "description": "Ekspor laporan trip bulanan.",
+      "acceptance": [
+        "Ekspor memuat order, plat, status dan tanggal",
+        "File maksimal 10.000 baris"
+      ],
+      "status": "In Progress",
+      "resolution": null,
+      "components": [
+        "Shipper Portal"
+      ],
+      "labels": [],
+      "story_points": 5,
+      "sprint": "Sprint 26.22",
+      "assignee": "laras-a",
+      "epic": null,
+      "links": [],
+      "comments": [],
+      "created": "2026-10-05",
+      "updated": "2026-11-04"
+    },
+    {
+      "key": "LOG-3405",
+      "type": "Story",
+      "summary": "[BE] As Logisly, I want GPS geofence events for pickup and drop locations so that trip status updates automatically",
+      "description": "Platform menerima event masuk dan keluar geofence di titik muat dan bongkar, lalu mengubah status trip.",
+      "acceptance": [
+        "Event masuk geofence titik muat dicatat dengan jam",
+        "Event masuk geofence titik bongkar dicatat dengan jam",
+        "Radius geofence bisa dikonfigurasi per lokasi"
+      ],
+      "status": "In Progress",
+      "resolution": null,
+      "components": [
+        "Platform"
+      ],
+      "labels": [],
+      "story_points": 8,
+      "sprint": "Sprint 26.22",
+      "assignee": "agung-s",
+      "epic": "LOG-3402",
+      "links": [],
+      "comments": [
+        {
+          "author": "agung-s",
+          "created": "2026-11-09",
+          "body": "Event muat sudah jalan di staging. Event bongkar belum, estimasi akhir Sprint 26.22."
+        }
+      ],
+      "created": "2026-10-06",
+      "updated": "2026-11-09"
+    },
+    {
+      "key": "LOG-3408",
+      "type": "Task",
+      "summary": "Backfill status trip historis untuk laporan OTD",
+      "description": "Isi status trip bulan Agustus sampai Oktober dari log GPS.",
+      "acceptance": [],
+      "status": "To Do",
+      "resolution": null,
+      "components": [
+        "Data"
+      ],
+      "labels": [],
+      "story_points": null,
+      "sprint": null,
+      "assignee": "wulan-s",
+      "epic": null,
+      "links": [],
+      "comments": [],
+      "created": "2026-10-14",
+      "updated": "2026-10-14"
+    },
+    {
+      "key": "LOG-3409",
+      "type": "Story",
+      "summary": "[Ops Console] As Allocation, I want to filter tickets by team label so that each team sees only its own follow-ups",
+      "description": "Filter tiket di ops console berdasarkan label tim.",
+      "acceptance": [
+        "Filter tersedia untuk tim alloc, ct, mm, warehouse",
+        "Filter tersimpan per operator"
+      ],
+      "status": "To Do",
+      "resolution": null,
+      "components": [
+        "Ops Console"
+      ],
+      "labels": [],
+      "story_points": 3,
+      "sprint": null,
+      "assignee": null,
+      "epic": null,
+      "links": [],
+      "comments": [],
+      "created": "2026-10-16",
+      "updated": "2026-10-16"
+    },
+    {
+      "key": "LOG-3411",
+      "type": "Bug",
+      "summary": "Jam tiket di ops console tampil UTC",
+      "description": "Waktu tiket tampil 7 jam lebih awal.",
+      "acceptance": [],
+      "status": "Done",
+      "resolution": "Done",
+      "components": [
+        "Ops Console"
+      ],
+      "labels": [],
+      "story_points": null,
+      "sprint": null,
+      "assignee": "laras-a",
+      "epic": null,
+      "links": [],
+      "comments": [],
+      "created": "2026-10-17",
+      "updated": "2026-10-22"
+    },
+    {
+      "key": "LOG-3412",
+      "type": "Story",
+      "summary": "[Driver App] As Driver, I want to upload the POD photo after unloading so that the shipper gets proof of delivery faster",
+      "description": "Setelah bongkar, driver mengambil foto surat jalan bertanda tangan dari aplikasi.",
+      "acceptance": [
+        "Tombol upload POD muncul setelah status bongkar selesai",
+        "Foto terkirim ke Platform dengan jam dan plat"
+      ],
+      "status": "To Do",
+      "resolution": null,
+      "components": [
+        "Driver App"
+      ],
+      "labels": [
+        "customer-request"
+      ],
+      "story_points": 3,
+      "sprint": null,
+      "assignee": null,
+      "epic": null,
+      "links": [],
+      "comments": [
+        {
+          "author": "sari-indah",
+          "created": "2026-10-20",
+          "body": "Dibuat dari permintaan CS. Belum ada yang pegang."
+        }
+      ],
+      "created": "2026-10-20",
+      "updated": "2026-10-20"
+    },
+    {
+      "key": "LOG-3414",
+      "type": "Story",
+      "summary": "[AI Agent] As CT, I want the voice agent to confirm truck position by phone so that CT does not have to call drivers",
+      "description": "Agent suara menelepon driver dan mencatat posisi.",
+      "acceptance": [
+        "Posisi dicatat ke trip setelah panggilan",
+        "Panggilan gagal memicu tiket CT"
+      ],
+      "status": "Done",
+      "resolution": "Done",
+      "components": [
+        "AI Agent"
+      ],
+      "labels": [],
+      "story_points": 8,
+      "sprint": null,
+      "assignee": "agung-s",
+      "epic": null,
+      "links": [],
+      "comments": [],
+      "created": "2026-09-01",
+      "updated": "2026-10-30"
+    },
+    {
+      "key": "LOG-3417",
+      "type": "Story",
+      "summary": "[Driver App] As Driver, I want to send the delivery receipt photo from the app so that the shipper gets proof of delivery faster",
+      "description": "Driver mengirim foto bukti terima dari app setelah bongkar.",
+      "acceptance": [
+        "Foto bukti terima bisa dikirim dari app"
+      ],
+      "status": "To Do",
+      "resolution": null,
+      "components": [
+        "Driver App"
+      ],
+      "labels": [
+        "customer-request"
+      ],
+      "story_points": 3,
+      "sprint": null,
+      "assignee": null,
+      "epic": null,
+      "links": [],
+      "comments": [
+        {
+          "author": "sari-indah",
+          "created": "2026-11-05",
+          "body": "Request dari shipper PT Sinar Pangan Nusantara."
+        }
+      ],
+      "created": "2026-11-05",
+      "updated": "2026-11-05"
+    },
+    {
+      "key": "LOG-3420",
+      "type": "Story",
+      "summary": "[FE] As Shipper, I want the trip list to show the latest milestone so that I know where each truck is",
+      "description": "Kolom milestone terakhir di daftar trip shipper portal.",
+      "acceptance": [
+        "Daftar trip memuat kolom milestone terakhir",
+        "Kolom bisa difilter"
+      ],
+      "status": "To Do",
+      "resolution": null,
+      "components": [
+        "Shipper Portal"
+      ],
+      "labels": [],
+      "story_points": 3,
+      "sprint": null,
+      "assignee": null,
+      "epic": null,
+      "links": [],
+      "comments": [],
+      "created": "2026-11-09",
+      "updated": "2026-11-09"
+    }
+  ]
+}

@@ -3,14 +3,15 @@
     python demo-data/logisly/gen_uc3.py
 
 Most of uc3/ is hand-written text checked in as is (meeting notes, chat
-export, GitHub snapshot, templates, roster). This script only builds the two
+export, Jira snapshot, templates, roster). This script only builds the two
 sources that need a real file format:
 
-    uc3/sources/01_request_driver-app-ai-assistant.docx   Ops request doc (as if from Drive)
-    uc3/sources/03_email_cs_epod-request.eml              Customer Success email
+    uc3/sources/01_request_milestone-follow-up.docx   Ops request doc (as if from Drive)
+    uc3/sources/03_email_cs_unloading-update.eml      Customer Success email
 
-Several sources disagree on purpose; uc3/expected/consistency_report.md lists
-what the agent should catch.
+The topic is UC1 (milestone checklists for the driver follow-up agent). Several
+sources disagree on purpose; uc3/expected/consistency_report.md lists what the
+agent should catch.
 """
 
 from __future__ import annotations
@@ -32,23 +33,24 @@ def request_doc() -> None:
     doc = Document()
     doc.styles["Normal"].font.name = "Arial"
     doc.styles["Normal"].font.size = Pt(10.5)
-    doc.add_heading("Request: AI Assistant di Driver App", level=1)
-    doc.add_paragraph("Dari: Hadi Pranoto (Head of Operations)\nKepada: Nadia Putri (Product)\nTanggal: 30 Oktober 2026")
+    doc.add_heading("Request: Follow-up driver per milestone", level=1)
+    doc.add_paragraph("Dari: Hadi Pranoto (Head of Operations)\nKepada: Nadia Putri (Product)\nTanggal: 6 November 2026")
 
     doc.add_heading("Latar belakang", level=2)
     doc.add_paragraph(
-        "Follow-up driver saat ini lewat agent teks di WhatsApp. Hanya sekitar 20-30% kasus selesai tanpa tim ops: "
-        "agent sering salah paham, bertanya berulang, dan tidak bisa membaca voice note atau foto. Biaya WhatsApp naik "
-        "sekitar 5 kali sejak tarif per pesan. Telepon ke driver masih manual lewat PBX oleh tim ops."
+        "Follow-up driver sekarang lewat bot WhatsApp yang menjalankan checklist SOP sebagai skrip. Bot menanyakan "
+        "hal yang sebenarnya sudah ada di sistem (plat, titik muat, status driver app), mengabaikan foto driver, "
+        "dan bertanya berulang sepanjang malam. Hasilnya driver kesal, tim CT dan Allocation harus follow-up manual, "
+        "dan biaya WhatsApp terus naik."
     )
     doc.add_heading("Yang kami minta", level=2)
     for item in (
-        "Driver bisa chat dengan AI assistant langsung di driver app (teks, voice note, foto, video pendek).",
-        "AI assistant memahami voice note dan foto, lalu membalas dengan bahasa natural, tidak kaku.",
-        "Kalau ada anomali tracking, AI assistant yang menyapa driver duluan di app.",
-        "Kalau driver tidak membalas dalam 5 menit, AI assistant menelepon driver otomatis lewat app (fase 1).",
-        "Kalau masalah tidak selesai, tiket otomatis ke ops console sudah berisi ringkasan, transkrip dan penjelasan foto.",
-        "Bahasa: Indonesia informal, termasuk campuran bahasa Jawa dan Sunda yang biasa dipakai driver.",
+        "Checklist follow-up per milestone order: assigned, menuju muat, di lokasi muat, dalam perjalanan, di lokasi bongkar, selesai bongkar.",
+        "Data yang sudah ada di sistem diisi otomatis. Driver hanya ditanya hal yang tidak diketahui sistem.",
+        "Foto dari driver (foto unit, surat jalan, POD) dibaca sebagai bukti, tidak diabaikan.",
+        "Item yang tidak OK langsung jadi tiket ke tim yang tepat (Allocation, CT, MM, Warehouse).",
+        "Jangan kirim pesan ke driver pada jam istirahat malam: pesan ditahan antara 21:00–06:00 WIB.",
+        "Operator bisa mengubah milestone manual dari console, dan melihat checklist tiap trip.",
     ):
         doc.add_paragraph(item, style="List Number")
 
@@ -58,9 +60,8 @@ def request_doc() -> None:
     for c, v in zip(t.rows[0].cells, ("Metrik", "Sekarang", "Target")):
         c.text = v
     for row in (
-        ("Kasus selesai tanpa ops", "20-30%", "60%"),
-        ("Tiket follow-up manual per hari", "sekitar 140", "di bawah 60"),
-        ("Biaya WhatsApp per bulan", "naik terus", "turun 50% setelah 3 bulan"),
+        ("Pertanyaan ke driver per trip", "18", "6"),
+        ("Kasus terlambat terdeteksi sebelum muat", "40%", "80%"),
     ):
         cells = t.add_row().cells
         for c, v in zip(cells, row):
@@ -68,45 +69,45 @@ def request_doc() -> None:
 
     doc.add_heading("Jadwal", level=2)
     doc.add_paragraph(
-        "Pilot dengan 50 driver di koridor Cikarang - Semarang mulai minggu kedua Januari 2027, "
-        "lalu rollout ke semua driver setelah 1 bulan pilot."
+        "Pilot live 4 Desember 2026 untuk shipper FMCG, lalu diperluas ke shipper lain "
+        "setelah dua minggu pilot."
     )
     doc.add_heading("Catatan", level=2)
     doc.add_paragraph(
-        "Masih banyak driver pakai HP Android lama dan sinyal lemah di jalur Pantura. "
-        "Mohon dipertimbangkan mode hemat data."
+        "SOP Shopee punya item tambahan (ID driver Shopee, status onsite di aplikasi Shopee). "
+        "Mohon dipertimbangkan, tapi FMCG dulu."
     )
-    doc.save(OUT / "01_request_driver-app-ai-assistant.docx")
+    doc.save(OUT / "01_request_milestone-follow-up.docx")
 
 
 def cs_email() -> None:
     msg = EmailMessage()
     msg["From"] = "Sari Indah <sari.indah@logisly.example>"
     msg["To"] = "Nadia Putri <nadia.putri@logisly.example>"
-    msg["Subject"] = "Fwd: Permintaan bukti terima digital - PT Sumber Pangan Nusantara"
-    msg["Date"] = format_datetime(datetime(2026, 11, 4, 10, 32, tzinfo=WIB))
-    msg["Message-ID"] = "<03_email_cs_epod@mock.logisly.example>"
+    msg["Subject"] = "Fwd: Update bongkar dan bukti terima terlambat - PT Sinar Pangan Nusantara"
+    msg["Date"] = format_datetime(datetime(2026, 11, 9, 10, 32, tzinfo=WIB))
+    msg["Message-ID"] = "<03_email_cs_unloading@mock.logisly.example>"
     msg.set_content(
         "Hai Nadia,\n\n"
-        "Sesuai product sync kemarin, berikut request dari PT Sumber Pangan Nusantara. Mereka shipper top 10 kita "
-        "(sekitar 900 trip per bulan). Tolong dibantu prioritas ya.\n\n"
-        "Ringkasan permintaan mereka:\n"
-        "1. Foto surat jalan yang sudah ditandatangani penerima muncul di shipper portal per pengiriman.\n"
-        "2. Ada nama penerima dan jam terima.\n"
-        "3. Bisa download semua bukti terima satu bulan sekaligus untuk audit.\n"
-        "4. Mereka butuh ini sebelum 31 Desember 2026 untuk audit tahunan.\n\n"
-        "Saya sempat buat issue di GitHub driver-app (Foto bukti terima di app driver), tapi belum ada yang pegang.\n\n"
+        "Berikut komplain dari PT Sinar Pangan Nusantara (shipper FMCG, sekitar 600 trip per bulan). "
+        "Tolong dibantu prioritas ya.\n\n"
+        "Ringkasan:\n"
+        "1. Update selesai bongkar dan bukti terima (POD) sering terlambat, kadang baru masuk besok harinya.\n"
+        "2. Tim gudang mereka tidak tahu kapan truk sudah selesai bongkar.\n"
+        "3. Mereka minta update bongkar dan POD rutin diterima paling lambat 31 Desember 2026, "
+        "karena ada audit akhir tahun.\n\n"
+        "Saya lihat sudah ada issue LOG-3412 dan LOG-3417 soal upload foto POD di driver app, tapi belum ada yang pegang.\n\n"
         "Thanks,\nSari\n\n"
         "---------- Forwarded message ----------\n"
-        "From: Lukas Hartono <lukas.hartono@sumberpangan.example>\n"
-        "Date: Mon, 2 Nov 2026 16:05\n"
-        "Subject: Permintaan bukti terima digital\n\n"
-        "Bu Sari,\n\nTim audit kami minta semua bukti terima tahun 2026 tersedia digital. Saat ini bukti terima dari driver "
-        "masih dikirim via WhatsApp ke admin kami dan sering tercecer. Apakah Logisly bisa menyediakan bukti terima "
-        "(foto dan tanda tangan penerima) di portal, dan bisa diunduh per bulan? Kami butuh sebelum akhir Desember.\n\n"
-        "Salam,\nLukas Hartono\nLogistics Manager, PT Sumber Pangan Nusantara\n"
+        "From: Lukas Hartono <lukas.hartono@sinarpangan.example>\n"
+        "Date: Fri, 6 Nov 2026 16:05\n"
+        "Subject: Update bongkar dan bukti terima terlambat\n\n"
+        "Bu Sari,\n\nBeberapa minggu ini kami sering baru tahu truk sudah bongkar setelah menelepon driver sendiri. "
+        "Bukti terima juga datang terlambat. Mohon ada update bongkar dan POD yang lebih tepat waktu, "
+        "paling lambat 31 Desember 2026 untuk keperluan audit kami.\n\n"
+        "Salam,\nLukas Hartono\nLogistics Manager, PT Sinar Pangan Nusantara\n"
     )
-    (OUT / "03_email_cs_epod-request.eml").write_bytes(bytes(msg))
+    (OUT / "03_email_cs_unloading-update.eml").write_bytes(bytes(msg))
 
 
 def main() -> None:

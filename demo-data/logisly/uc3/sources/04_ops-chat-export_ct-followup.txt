@@ -1,0 +1,17 @@
+[05/11/26 02.10] Bot Logisly: Posisi di mana pak?
+[05/11/26 02.40] Bot Logisly: Posisi di mana pak?
+[05/11/26 03.10] Bot Logisly: Posisi di mana pak?
+[05/11/26 03.40] Bot Logisly: Posisi di mana pak?
+[05/11/26 03.52] Pak Budi Santoso: Sya lagi tidur pak
+[05/11/26 04.10] Bot Logisly: Posisi di mana pak?
+[05/11/26 07.31] Dimas Ops: Pak Hadi, bot kirim "Posisi di mana pak?" tiap 30 menit dari jam 2 pagi ke driver B 9123 KXT. Driver komplain
+[05/11/26 07.33] Hadi Pranoto: Itu bot lama (LOG-3398). Kenapa jam segitu masih kirim?
+[05/11/26 07.35] Dimas Ops: Tidak ada jam tenang Pak, jalan terus semalaman
+[05/11/26 07.40] Dimas Ops: Dan foto Timemark yang dikirim driver kemarin (ada plat, jam, lokasi) tidak dibaca. Bot tanya lagi "sudah sampai lokasi muat?"
+[05/11/26 07.42] Hadi Pranoto: Itu yang kita perbaiki di request milestone. Foto harus dibaca sebagai bukti
+[05/11/26 07.50] Wulan Sari: Biaya WhatsApp bulan lalu Rp 38 juta/bulan. Sebagian besar pesan follow-up tracking
+[05/11/26 07.52] Hadi Pranoto: Kalau pertanyaannya dikurangi, itu ikut turun. Wulan tolong siapkan baseline
+[05/11/26 08.05] Dimas Ops: Pak, driver Pak Agus (D 8812 FAB) bilang "sya blum bisa login di aplikasi", bot jawab pakai kalimat template
+[05/11/26 08.07] Hadi Pranoto: Harusnya driver dikirimi link install app, bukan ditanya ulang
+[05/11/26 08.15] Dimas Ops: Satu lagi Pak, kalau driver telat ke titik muat, kita tahunya sudah telat. Idealnya terdeteksi sebelum muat
+[05/11/26 08.16] Hadi Pranoto: Betul, itu target 80% di request

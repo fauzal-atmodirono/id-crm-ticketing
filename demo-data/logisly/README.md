@@ -81,28 +81,28 @@ The answer key recommends Trans Cahaya (revised quote) on T1 to T3 and Prima Fle
 
 ## UC3: Product Manager agent (`uc3/`)
 
-**Scenario:** Logisly's product team must turn this week's inputs into a PRD and a GitHub backlog before sprint planning on Monday 9 Nov. The inputs are an Ops request, the product sync notes, a Customer Success email and an Ops WhatsApp chat.
+**Scenario:** Logisly's product team must turn this week's inputs on the UC1 topic (milestone-based driver follow-up checklists) into a PRD in Logisly's format and a Jira backlog before sprint planning on Monday 16 Nov. The inputs are an Ops request, the product sync notes, a Customer Success email and an Ops/CT WhatsApp chat.
 
 | Path | What |
 |---|---|
-| `sources/01_request_driver-app-ai-assistant.docx` | Head of Ops asks for an AI assistant in the driver app (as if from Drive) |
-| `sources/02_meeting-notes_2026-11-03_product-sync.md` | Product sync notes |
-| `sources/03_email_cs_epod-request.eml` | Shipper request for digital proof of delivery, forwarded by CS |
-| `sources/04_ops-chat-export_whatsapp-cost.txt` | Ops WhatsApp group export about WhatsApp cost |
-| `templates/` | Logisly's PRD and user story templates |
-| `github/conventions.yaml` | Repos, labels, title and branch format, definition of ready/done |
-| `github/issues_snapshot.json` | 17 existing issues across 5 repos, with comment threads |
-| `team/roster.yaml`, `team/calendar.yaml` | People, capacity, leave, sprints, code freeze, holidays |
-| `expected/prd_driver-app-ai-assistant.md` | Example PRD in the template |
-| `expected/backlog.json` | Issues to create and update |
+| `sources/01_request_milestone-follow-up.docx` | Head of Ops asks for checklist follow-up per milestone (as if from Drive) |
+| `sources/02_meeting-notes_2026-11-10_product-sync.md` | Product sync notes |
+| `sources/03_email_cs_unloading-update.eml` | Shipper complaint about late unloading / POD updates, forwarded by CS |
+| `sources/04_ops-chat-export_ct-followup.txt` | CT WhatsApp group export: bot polling all night, ignored photos, WhatsApp cost |
+| `templates/` | Logisly's PRD format and user story template |
+| `jira/conventions.yaml` | Project LOG: issue types, statuses, components, story points, definition of ready/done |
+| `jira/issues_snapshot.json` | 14 existing issues (LOG-3394..LOG-3420) with comments |
+| `team/roster.yaml`, `team/calendar.yaml` | People, components, capacity, leave, sprints, code freeze, holidays |
+| `expected/prd_uc1-milestone-checklist.md` | Example PRD in Logisly's format |
+| `expected/backlog.json` | Epic, stories, updates and the LOG-3417 transition |
 | `expected/consistency_report.md` | Conflicts, duplicates, gaps and the capacity check |
 
 **Problems planted across the sources:**
-- Release date: 18 Dec in the meeting notes vs a January pilot in the request. 18 Dec is also the last day before the code freeze.
-- Automated call: phase 1 in the request, phase 2 in the meeting.
-- Chat depends on push notifications, and platform-api#131 has been blocked with no ETA.
-- Follow-up rules differ: call after 5 minutes vs at most 2 messages, then a ticket.
-- The CS email's e-POD request duplicates driver-app#142, and #148 duplicates #142 too. The shipper-portal issue Laras asked for doesn't exist.
-- The WhatsApp cost target has no baseline. The chat and data-pipelines#22 disagree on what billing data the BSP provides.
+- Release date: 4 Dec in the request vs 18 Dec in the meeting notes. 18 Dec is the last day before the code freeze, and the shipper's 31 Dec deadline falls inside it.
+- Quiet hours: 21:00-06:00 in the request vs 22:00-05:00 in the meeting notes.
+- The automatic milestone trigger depends on LOG-3405 (In Progress).
+- LOG-3417 duplicates LOG-3412. LOG-3398 (30-minute reminders) is superseded.
+- The Shopee SOP items are phase 2.
+- The WhatsApp cost has a baseline (Rp 38 juta/bulan) but no target.
 
 The agents that run on this data are in `apps/logisly-agents/` (see its README).

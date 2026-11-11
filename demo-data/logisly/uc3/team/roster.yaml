@@ -1,21 +1,22 @@
 # Logisly product & engineering team (fictional). capacity_sp = story points
 # per two-week sprint at full availability. committed = points already taken
-# by existing issues (see github/issues_snapshot.json).
+# by existing issues (see jira/issues_snapshot.json). id = the Jira assignee
+# value; components decide which team (mobile/backend/frontend) a person counts in.
 people:
-  - {name: "Nadia Putri",     role: "Product Manager",  github: nadia-logisly}
-  - {name: "Rizky Ramadhan",  role: "Mobile Lead",      github: rizky-r,      repos: [driver-app],   capacity_sp: 13,
+  - {id: nadia-p,   name: "Nadia Putri",     role: "Product Manager"}
+  - {id: rizky-r,   name: "Rizky Ramadhan",  role: "Mobile Lead",       components: ["Driver App"],  capacity_sp: 13,
      leave: [{from: 2026-12-21, to: 2026-12-31}]}
-  - {name: "Bayu Pratama",    role: "Mobile Engineer",  github: bayu-p,       repos: [driver-app],   capacity_sp: 10}
-  - {name: "Agung Setiawan",  role: "Backend Lead",     github: agung-s,      repos: [platform-api], capacity_sp: 13}
-  - {name: "Fikri Hakim",     role: "Backend Engineer", github: fikrih,       repos: [platform-api], capacity_sp: 10}
-  - {name: "Laras Ayu",       role: "Frontend Engineer", github: laras-ayu,   repos: [shipper-portal, ops-console], capacity_sp: 10}
-  - {name: "Wulan Sari",      role: "Data Analyst",     github: wulan-data,   repos: [data-pipelines], capacity_sp: 8}
-  - {name: "Tegar Wijaya",    role: "QA Engineer",      github: tegar-qa,     capacity_sp: 10}
+  - {id: bayu-p,    name: "Bayu Pratama",    role: "Mobile Engineer",   components: ["Driver App"],  capacity_sp: 10}
+  - {id: agung-s,   name: "Agung Setiawan",  role: "Backend Lead",      components: ["Platform", "AI Agent"], capacity_sp: 13}
+  - {id: fikri-h,   name: "Fikri Hakim",     role: "Backend Engineer",  components: ["Platform", "AI Agent"], capacity_sp: 10}
+  - {id: laras-a,   name: "Laras Ayu",       role: "Frontend Engineer", components: ["Ops Console", "Shipper Portal"], capacity_sp: 10}
+  - {id: wulan-s,   name: "Wulan Sari",      role: "Data Analyst",      components: ["Data"],        capacity_sp: 8}
+  - {id: tegar-w,   name: "Tegar Wijaya",    role: "QA Engineer"}
 
 stakeholders:
   - {name: "Hadi Pranoto", role: "Head of Operations"}
   - {name: "Sari Indah",   role: "Customer Success Lead"}
-  - {name: "Dimas Ops",    role: "Ops Coordinator"}
+  - {name: "Dimas Ops",    role: "Ops Coordinator (CT)"}
 
 committed:   # points already planned per sprint from the existing backlog
   "Sprint 26.22": {Rizky Ramadhan: 8, Bayu Pratama: 8, Agung Setiawan: 8, Fikri Hakim: 5, Laras Ayu: 8}

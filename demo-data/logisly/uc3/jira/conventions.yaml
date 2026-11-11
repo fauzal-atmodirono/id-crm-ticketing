@@ -1,0 +1,39 @@
+# How Logisly's product team uses Jira (mock). The agent writes issues that
+# follow these rules; the demo project mirrors them.
+project: {key: LOG, name: "Logisly Platform"}
+
+issue_types: [Epic, Story, Task, Bug]
+statuses: ["To Do", "In Progress", "Done", "Won't Do"]
+resolutions: [Done, Duplicate, "Won't Do"]
+link_types: [duplicates, blocks, "relates to"]
+
+components:
+  "Driver App":      {owner: "Rizky Ramadhan", team: mobile}
+  "Platform":        {owner: "Agung Setiawan", team: backend}
+  "AI Agent":        {owner: "Agung Setiawan", team: backend}
+  "Ops Console":     {owner: "Laras Ayu",      team: frontend}
+  "Shipper Portal":  {owner: "Laras Ayu",      team: frontend}
+  "Data":            {owner: "Wulan Sari",     team: data}
+
+labels: [uc1-milestone, pilot, phase-2, tech-debt, customer-request, whatsapp-cost]   # free text, no fixed list
+
+story_points: [1, 2, 3, 5, 8]   # required on Story; no 13, split the story instead
+
+summary_format: >
+  Stories: "[Driver App|BE|FE|Ops Console] As <role>, I want <capability> so that <benefit>"
+  (prefix optional). Epics: a short noun phrase. Bugs and Tasks: verb-first short sentence.
+
+definition_of_ready:
+  - story written as "As <role>, I want ... so that ..." with a numbered acceptance list
+  - story points set (1, 2, 3, 5 or 8)
+  - exactly one component, and a sprint when planned
+  - dependencies linked ("blocks" / "is blocked by")
+  - mock up linked when the story has UI
+
+definition_of_done:
+  - merged with review from the component owner
+  - QA passed on staging
+  - release note line added
+  - acceptance list verified by the PM
+
+sprints: see team/calendar.yaml (named "Sprint 26.22")

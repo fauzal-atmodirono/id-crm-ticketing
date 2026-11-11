@@ -1,30 +1,20 @@
-# Template issue GitHub: user story
+# Template issue Jira: user story
 
-**Judul:** `[<area>] <kalimat pendek, kata kerja di depan>`
+**Summary:** `[Driver App|BE|FE|Ops Console] As <role>, I want <kemampuan> so that <manfaat>`
+(prefix boleh kosong; lihat jira/conventions.yaml)
 
-**Body:**
+**Description:** satu-dua kalimat konteks, plus link PRD dan sumber requirement.
 
-```
-### User story
-Sebagai <user>, saya ingin <kemampuan>, supaya <manfaat>.
-
-### Acceptance criteria
-- [ ] Given <kondisi>, when <aksi>, then <hasil>
-- [ ] ...
-
-### Catatan teknis
-<endpoint, model data, library, batasan>
-
-### Dependensi
-- Blocked by #<nomor> (kalau ada)
-
-### Referensi
-- PRD: <link>
-- Sumber requirement: <dokumen / meeting / email>
-```
+**Acceptance:** daftar bernomor, tiap kriteria bisa dicek.
+1. <kriteria 1>
+2. <kriteria 2>
 
 **Field wajib:**
-- Label: satu `type:*`, satu `area:*`, satu `priority:*`
-- Milestone: sprint tujuan (lihat github/conventions.yaml)
-- Estimate: story point di label `sp:1|2|3|5|8` (tidak ada 13; pecah story-nya)
+- Type: Story
+- Component: satu dari Driver App, Platform, Ops Console, Shipper Portal, Data, AI Agent
+- Story points: 1, 2, 3, 5 atau 8 (tidak ada 13; pecah story-nya)
+- Sprint: sprint tujuan (lihat team/calendar.yaml), boleh kosong saat draft
 - Assignee: boleh kosong saat draft, wajib saat sprint planning
+- Epic: link ke Epic kalau bagian dari fitur besar
+- Links: `blocks` / `relates to` / `duplicates` kalau ada dependensi
+- Labels: bebas (mis. `uc1-milestone`, `pilot`, `phase-2`)

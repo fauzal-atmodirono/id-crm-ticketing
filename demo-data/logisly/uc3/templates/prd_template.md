@@ -3,47 +3,51 @@
 | | |
 |---|---|
 | Product Manager | <nama> |
-| Status | Draft / In Review / Approved |
-| Repo terkait | <logisly/driver-app, logisly/platform-api, ...> |
-| Target rilis | <sprint / tanggal> |
-| Terakhir diupdate | <tanggal> |
+| User | <tim yang memakai: Allocation, CT, Sales, MM, Warehouse, Driver> |
+| UAT | <tanggal / sprint> |
+| Target Release | <tanggal / sprint> |
 
-## 1. Latar belakang
-Kenapa fitur ini dibutuhkan sekarang. Sertakan data (angka, keluhan, biaya).
+## Table of Content
 
-## 2. Masalah
-Masalah yang mau diselesaikan, dari sisi user (driver, ops, shipper).
+## 1. Background
+Masalah yang mau diselesaikan, bernomor. Sertakan data (angka, keluhan, biaya).
+1. <masalah 1>
+2. <masalah 2>
 
-## 3. Tujuan dan non-tujuan
-- Tujuan:
-- Non-tujuan (eksplisit tidak dikerjakan di rilis ini):
+## 2. Impact
+Goals bernomor dengan target % dan rumusnya.
+1. <goal>: <target>%. Rumus: Number of <X> / number of <Y>
 
-## 4. User dan skenario
-| User | Skenario utama |
-|---|---|
-
-## 5. Requirement
-### 5.1 Fungsional
-| ID | Requirement | Prioritas (P0-P3) | Sumber |
-|---|---|---|---|
-
-### 5.2 Non-fungsional
-| ID | Requirement | Catatan |
+| Group | Current | Proposed |
 |---|---|---|
+| <tim> | <proses sekarang> | <proses usulan> |
 
-## 6. Metrik keberhasilan
-| Metrik | Baseline | Target | Cara ukur |
+Metric per tim:
+- <tim>: <metrik>
+
+## 3. Requirements & Timeline
+| Category | Details | PIC | Timeline |
 |---|---|---|---|
+| Release | | | |
+| Sosialisasi | | | |
+| Data Prep | | | |
+| Product | | | |
 
-## 7. Dependensi
-Issue, tim atau pihak luar yang harus selesai dulu.
+## 4. Flow
+1. <langkah 1>
+2. <langkah 2>
 
-## 8. Risiko
-| Risiko | Dampak | Mitigasi |
+## 5. Timeline
+| Category | Items | PIC | Timeline | Status |
+|---|---|---|---|---|
+
+## 6. Mock Up
+<link, atau TBD>
+
+## 7. Stories
+| Jira # | Description | Acceptance |
 |---|---|---|
+| LOG-<n> | [Driver App] As <role>, I want <x> so that <y> | 1. <kriteria> 2. <kriteria> |
 
-## 9. Rencana rilis
-Fase, sprint, dan apa yang masuk tiap fase.
-
-## 10. Pertanyaan terbuka
-Hal yang belum diputuskan dan siapa yang memutuskan.
+## 8. Pertanyaan terbuka
+Hal yang belum diputuskan dan siapa yang memutuskan. Jangan mengarang tanggal.

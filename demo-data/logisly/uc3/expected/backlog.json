@@ -1,50 +1,293 @@
 {
-  "note": "Answer key: the GitHub changes the UC3 agent should propose (and, after approval, apply). Story points match consistency_report.md.",
-  "epics": [
+  "note": "Answer key: the Jira changes the UC3 agent should propose (and, after approval, apply). Shape matches propose_changes(creates, updates, transitions). temp_id E1 is the Epic; stories reference it via epic. Story points match consistency_report.md.",
+  "creates": [
     {
-      "key": "EPIC-AI", "repo": "platform-api",
-      "title": "[ai-agent] AI assistant untuk driver di driver app (MVP)",
-      "labels": ["type:feature", "area:ai-agent", "priority:P1"],
-      "milestone": "Sprint 26.24",
-      "prd": "expected/prd_driver-app-ai-assistant.md"
+      "temp_id": "E1",
+      "type": "Epic",
+      "summary": "Checklist follow-up driver per milestone",
+      "description": "Enam milestone trip, checklist SOP per milestone, tiket bertim dan jam tenang 22:00–05:00 WIB. PRD: expected/prd_uc1-milestone-checklist.md",
+      "acceptance": [],
+      "components": [
+        "Platform"
+      ],
+      "labels": [
+        "uc1-milestone"
+      ],
+      "story_points": null,
+      "sprint": null,
+      "assignee": "nadia-p",
+      "epic": null
     },
     {
-      "key": "EPIC-POD", "repo": "driver-app", "existing": 142,
-      "title": "[driver-app] Upload foto POD setelah bongkar muat",
-      "note": "Existing issue becomes the e-POD epic."
+      "temp_id": "S1",
+      "type": "Story",
+      "summary": "[BE] As Logisly, I want each trip to move through six milestones set by gps, app or manual so that follow-up starts at the right step",
+      "description": "Bagian dari PRD checklist follow-up driver per milestone (UC1).",
+      "acceptance": [
+        "Enam milestone: assigned, to_pickup, at_pickup, in_transit, at_drop, unloaded",
+        "Pengubah milestone tercatat sebagai gps, app atau manual"
+      ],
+      "components": [
+        "Platform"
+      ],
+      "labels": [
+        "uc1-milestone",
+        "pilot"
+      ],
+      "story_points": 5,
+      "sprint": "Sprint 26.23",
+      "assignee": "agung-s",
+      "epic": "E1"
+    },
+    {
+      "temp_id": "S2",
+      "type": "Story",
+      "summary": "[BE] As Allocation, I want system checklist items filled from trip data so that drivers are not asked what the system already knows",
+      "description": "Bagian dari PRD checklist follow-up driver per milestone (UC1).",
+      "acceptance": [
+        "Item sumber system terisi saat milestone berubah",
+        "Item khusus Shopee dilewati untuk trip non-Shopee"
+      ],
+      "components": [
+        "Platform"
+      ],
+      "labels": [
+        "uc1-milestone",
+        "pilot"
+      ],
+      "story_points": 5,
+      "sprint": "Sprint 26.23",
+      "assignee": "fikri-h",
+      "epic": "E1"
+    },
+    {
+      "temp_id": "S3",
+      "type": "Story",
+      "summary": "[AI Agent] As Driver, I want my photos read as evidence so that I am not asked again for what I already sent",
+      "description": "Bagian dari PRD checklist follow-up driver per milestone (UC1).",
+      "acceptance": [
+        "Foto unit, surat jalan dan POD dibaca; plat dan jam dicocokkan",
+        "Item yang sudah dijawab tidak ditanya ulang"
+      ],
+      "components": [
+        "AI Agent"
+      ],
+      "labels": [
+        "uc1-milestone",
+        "pilot"
+      ],
+      "story_points": 5,
+      "sprint": "Sprint 26.24",
+      "assignee": "agung-s",
+      "epic": "E1"
+    },
+    {
+      "temp_id": "S4",
+      "type": "Story",
+      "summary": "[AI Agent] As Driver, I want one short message with at most two open items so that I am not flooded with questions",
+      "description": "Bagian dari PRD checklist follow-up driver per milestone (UC1).",
+      "acceptance": [
+        "Pesan pembuka hanya memuat item photo/driver yang masih terbuka",
+        "Maksimal 2 item per pesan",
+        "Pertanyaan driver dijawab lebih dulu dari data trip",
+        "Tidak ada item terbuka: tidak ada pesan"
+      ],
+      "components": [
+        "AI Agent"
+      ],
+      "labels": [
+        "uc1-milestone",
+        "pilot"
+      ],
+      "story_points": 5,
+      "sprint": "Sprint 26.24",
+      "assignee": "fikri-h",
+      "epic": "E1"
+    },
+    {
+      "temp_id": "S5",
+      "type": "Story",
+      "summary": "[BE] As Allocation, I want every not-OK item to become a ticket to the right team so that nobody has to follow up manually",
+      "description": "Bagian dari PRD checklist follow-up driver per milestone (UC1).",
+      "acceptance": [
+        "Tiket berlabel logisly-checklist dan team-<tim>",
+        "Prioritas tinggi",
+        "Tiket berisi item, bukti dan trip"
+      ],
+      "components": [
+        "Platform"
+      ],
+      "labels": [
+        "uc1-milestone",
+        "pilot"
+      ],
+      "story_points": 3,
+      "sprint": "Sprint 26.23",
+      "assignee": "fikri-h",
+      "epic": "E1"
+    },
+    {
+      "temp_id": "S6",
+      "type": "Story",
+      "summary": "[BE] As Driver, I want no message between 22:00 and 05:00 WIB so that I can rest",
+      "description": "Bagian dari PRD checklist follow-up driver per milestone (UC1).",
+      "acceptance": [
+        "Perubahan milestone di jam tenang mencatat checklist tapi menahan pesan",
+        "Pesan terkirim setelah 05:00 WIB atau saat dipaksa operator"
+      ],
+      "components": [
+        "Platform"
+      ],
+      "labels": [
+        "uc1-milestone",
+        "pilot"
+      ],
+      "story_points": 2,
+      "sprint": "Sprint 26.23",
+      "assignee": "fikri-h",
+      "epic": "E1"
+    },
+    {
+      "temp_id": "S7",
+      "type": "Story",
+      "summary": "[BE] As CT, I want a summary note when a milestone checklist is complete so that I can see the result at a glance",
+      "description": "Bagian dari PRD checklist follow-up driver per milestone (UC1).",
+      "acceptance": [
+        "Catatan ringkasan privat dibuat sekali per milestone"
+      ],
+      "components": [
+        "Platform"
+      ],
+      "labels": [
+        "uc1-milestone",
+        "pilot"
+      ],
+      "story_points": 2,
+      "sprint": "Sprint 26.24",
+      "assignee": "fikri-h",
+      "epic": "E1"
+    },
+    {
+      "temp_id": "S8",
+      "type": "Story",
+      "summary": "[Ops Console] As Allocation, I want to see each trip's milestone stepper and checklist so that I can check the status of every item",
+      "description": "Bagian dari PRD checklist follow-up driver per milestone (UC1).",
+      "acceptance": [
+        "Stepper enam milestone",
+        "Tiap item menampilkan sumber (system/photo/driver) dan status"
+      ],
+      "components": [
+        "Ops Console"
+      ],
+      "labels": [
+        "uc1-milestone",
+        "pilot"
+      ],
+      "story_points": 5,
+      "sprint": "Sprint 26.24",
+      "assignee": "laras-a",
+      "epic": "E1"
+    },
+    {
+      "temp_id": "S9",
+      "type": "Story",
+      "summary": "[Ops Console] As CT, I want to set the milestone manually and force-send the driver message so that I can work when GPS is not ready",
+      "description": "Bagian dari PRD checklist follow-up driver per milestone (UC1).",
+      "acceptance": [
+        "Pilihan gps / app / manual",
+        "Tombol kirim paksa saat jam tenang"
+      ],
+      "components": [
+        "Ops Console"
+      ],
+      "labels": [
+        "uc1-milestone",
+        "pilot"
+      ],
+      "story_points": 2,
+      "sprint": "Sprint 26.24",
+      "assignee": "laras-a",
+      "epic": "E1"
+    },
+    {
+      "temp_id": "S10",
+      "type": "Story",
+      "summary": "[BE] As Logisly, I want the milestone to change automatically from GPS geofence events so that nobody sets it by hand",
+      "description": "Bergantung ke LOG-3405 (In Progress). Sebelum itu, milestone diubah manual atau dari app.",
+      "acceptance": [
+        "Milestone titik muat dan bongkar berubah dari event geofence",
+        "Berjalan setelah LOG-3405 selesai"
+      ],
+      "components": [
+        "Platform"
+      ],
+      "labels": [
+        "uc1-milestone",
+        "pilot"
+      ],
+      "story_points": 3,
+      "sprint": "Sprint 26.24",
+      "assignee": "agung-s",
+      "epic": "E1",
+      "links": [
+        {
+          "type": "relates to",
+          "key": "LOG-3405"
+        }
+      ]
+    },
+    {
+      "temp_id": "S11",
+      "type": "Story",
+      "summary": "[BE] As Allocation, I want the Shopee-only checklist items so that Shopee trips follow the full SOP",
+      "description": "Bagian dari PRD checklist follow-up driver per milestone (UC1).",
+      "acceptance": [
+        "ID driver Shopee aktif",
+        "Status onsite dan bongkar terdaftar di aplikasi Shopee"
+      ],
+      "components": [
+        "Platform"
+      ],
+      "labels": [
+        "uc1-milestone",
+        "phase-2"
+      ],
+      "story_points": 5,
+      "sprint": "Sprint 27.01",
+      "assignee": "agung-s",
+      "epic": "E1"
     }
   ],
-  "create": [
-    {"key": "A1", "epic": "EPIC-AI", "repo": "driver-app", "title": "[driver-app] Layar chat dengan AI assistant", "labels": ["type:feature", "area:driver-app", "priority:P1", "sp:8"], "milestone": "Sprint 26.23", "assignee": "rizky-r", "replaces_spike": 151,
-     "acceptance": ["Given driver punya order aktif, when membuka tab Bantuan, then riwayat chat order tersebut tampil", "Given AI membalas, when app terbuka, then balasan muncul tanpa refresh manual"]},
-    {"key": "A2", "epic": "EPIC-AI", "repo": "driver-app", "title": "[driver-app] Rekam dan kirim voice note ke AI assistant", "labels": ["type:feature", "area:driver-app", "priority:P1", "sp:5"], "milestone": "Sprint 26.23", "assignee": "bayu-p",
-     "acceptance": ["Given driver menahan tombol mic, when dilepas, then voice note maks 2 menit terkirim", "Given sinyal putus, when sinyal kembali, then voice note terkirim otomatis"]},
-    {"key": "A3", "epic": "EPIC-AI", "repo": "driver-app", "title": "[driver-app] Kirim foto dan video pendek dengan keterangan", "labels": ["type:feature", "area:driver-app", "priority:P1", "sp:5"], "milestone": "Sprint 26.24", "assignee": "bayu-p",
-     "acceptance": ["Given driver memilih foto atau video maks 30 detik, when menambah keterangan dan kirim, then file dan keterangan diterima AI dalam satu pesan"]},
-    {"key": "A4", "epic": "EPIC-AI", "repo": "driver-app", "title": "[driver-app] Notifikasi pesan baru dari AI assistant", "labels": ["type:feature", "area:driver-app", "priority:P1", "sp:3", "status:blocked"], "milestone": "Sprint 26.24", "assignee": "rizky-r", "blocked_by": ["platform-api#131"],
-     "acceptance": ["Given app tertutup, when AI mengirim pesan, then driver menerima push notification", "Fallback selama #131 blocked: app cek pesan baru tiap 60 detik saat terbuka"]},
-    {"key": "A5", "epic": "EPIC-AI", "repo": "driver-app", "title": "[driver-app] Mode hemat data untuk chat", "labels": ["type:feature", "area:driver-app", "priority:P2", "sp:5"], "milestone": "Sprint 26.24", "assignee": "rizky-r",
-     "acceptance": ["Voice note dikompres ke 16 kbps", "Foto dikompres maks 300 KB sebelum upload", "Antrian kirim bertahan saat app ditutup"]},
-    {"key": "B1", "epic": "EPIC-AI", "repo": "platform-api", "title": "[platform] Endpoint chat driver ke AI assistant", "labels": ["type:feature", "area:platform", "priority:P1", "sp:5"], "milestone": "Sprint 26.23", "assignee": "fikrih"},
-    {"key": "B2", "epic": "EPIC-AI", "repo": "platform-api", "title": "[ai-agent] Pahami voice note dan foto dengan Gemini", "labels": ["type:feature", "area:ai-agent", "priority:P1", "sp:8"], "milestone": "Sprint 26.23", "assignee": "agung-s"},
-    {"key": "B3", "epic": "EPIC-AI", "repo": "platform-api", "title": "[ai-agent] Sapa driver duluan saat ada anomali tracking", "labels": ["type:feature", "area:ai-agent", "priority:P1", "sp:5"], "milestone": "Sprint 26.24", "assignee": "fikrih", "blocked_by": ["platform-api#135"]},
-    {"key": "B4", "epic": "EPIC-AI", "repo": "platform-api", "title": "[ai-agent] Tiket eskalasi otomatis berisi ringkasan, transkrip dan penjelasan foto", "labels": ["type:feature", "area:ai-agent", "priority:P1", "sp:5"], "milestone": "Sprint 26.24", "assignee": "agung-s", "related": ["ops-console#64"]},
-    {"key": "B5", "epic": "EPIC-AI", "repo": "platform-api", "title": "[ai-agent] Batasi follow-up: maksimal 2 pesan tanpa balasan, lalu tiket", "labels": ["type:feature", "area:ai-agent", "priority:P1", "sp:2"], "milestone": "Sprint 26.24", "assignee": "agung-s", "source": "04_ops-chat-export_whatsapp-cost.txt"},
-    {"key": "D1", "epic": "EPIC-AI", "repo": "driver-app", "title": "[driver-app] Rencana uji pilot 50 driver (Cikarang - Semarang)", "labels": ["type:chore", "area:driver-app", "priority:P1", "sp:5"], "milestone": "Sprint 26.24", "assignee": "tegar-qa"},
-    {"key": "E1", "epic": "EPIC-AI", "repo": "driver-app", "title": "[driver-app] Terima panggilan suara dari AI assistant", "labels": ["type:feature", "area:driver-app", "priority:P3", "sp:8"], "milestone": "Sprint 27.02", "phase": 2},
-    {"key": "E2", "epic": "EPIC-AI", "repo": "platform-api", "title": "[ai-agent] Telepon otomatis saat driver tidak membalas", "labels": ["type:feature", "area:ai-agent", "priority:P3", "sp:8"], "milestone": "Sprint 27.02", "phase": 2},
-    {"key": "P1", "epic": "EPIC-POD", "repo": "platform-api", "title": "[platform] API bukti terima: foto, nama penerima, jam terima", "labels": ["type:feature", "area:platform", "priority:P1", "sp:3"], "milestone": "Sprint 26.23", "assignee": "fikrih"},
-    {"key": "P2", "epic": "EPIC-POD", "repo": "shipper-portal", "title": "[shipper-portal] Tampilkan bukti terima di detail pengiriman", "labels": ["type:feature", "area:shipper-portal", "priority:P1", "sp:5"], "milestone": "Sprint 26.24", "assignee": "laras-ayu", "blocked_by": ["P1"]},
-    {"key": "P3", "epic": "EPIC-POD", "repo": "shipper-portal", "title": "[shipper-portal] Download bukti terima satu bulan sekaligus", "labels": ["type:feature", "area:shipper-portal", "priority:P2", "sp:3"], "milestone": "Sprint 26.24", "assignee": "laras-ayu", "blocked_by": ["P1"]},
-    {"key": "W1", "repo": "data-pipelines", "title": "[data] Dashboard biaya WhatsApp per kategori pesan dan per driver", "labels": ["type:feature", "area:data", "priority:P2", "sp:5"], "milestone": "Sprint 27.01", "assignee": "wulan-data", "blocked_by": ["data-pipelines#22"]}
+  "updates": [
+    {
+      "key": "LOG-3412",
+      "acceptance_append": [
+        "Tombol upload POD muncul setelah status bongkar selesai",
+        "Foto POD terkirim ke Platform dengan jam dan plat (dibaca agent untuk item 'pod')"
+      ],
+      "description_append": "Diperkaya dari LOG-3417 dan komplain PT Sinar Pangan Nusantara (update bongkar dan POD terlambat, tenggat 31 Desember 2026).",
+      "add_labels": [
+        "uc1-milestone",
+        "pilot"
+      ],
+      "sprint": "Sprint 26.23",
+      "assignee": "rizky-r"
+    },
+    {
+      "key": "LOG-3398",
+      "add_labels": [
+        "whatsapp-cost"
+      ],
+      "comment": "Digantikan oleh checklist per milestone (Epic E1): tanpa pengingat 30 menit dan dengan jam tenang 22:00–05:00 WIB. Bot lama dimatikan setelah pilot."
+    }
   ],
-  "update": [
-    {"ref": "driver-app#142", "set_labels": ["priority:P1"], "remove_labels": ["priority:P2"], "milestone": "Sprint 26.23", "assignee": "bayu-p",
-     "add_acceptance": ["Nama penerima dan jam terima wajib diisi", "Tanda tangan penerima di layar (opsional kalau surat jalan sudah ditandatangani)"]},
-    {"ref": "driver-app#148", "close": true, "set_labels": ["status:duplicate"], "comment": "Duplikat #142. Detail request shipper sudah ditambahkan ke sana."},
-    {"ref": "driver-app#151", "close": true, "comment": "Digantikan oleh story layar chat AI assistant (A1)."},
-    {"ref": "ops-console#64", "set_labels": ["priority:P1", "area:ai-agent", "sp:3"], "remove_labels": ["priority:P3"], "milestone": "Sprint 26.24", "assignee": "laras-ayu"},
-    {"ref": "platform-api#131", "comment": "Dibutuhkan oleh chat AI assistant (MVP 18 Des). Mohon eskalasi approval service account FCM ke security minggu ini."},
-    {"ref": "data-pipelines#22", "set_labels": ["priority:P2"], "remove_labels": ["priority:P3"], "comment": "Minta export CSV per template dan penerima ke BSP; dibutuhkan untuk dashboard biaya."}
+  "transitions": [
+    {
+      "key": "LOG-3417",
+      "status": "Won't Do",
+      "resolution": "Duplicate",
+      "duplicate_of": "LOG-3412",
+      "comment": "Duplikat LOG-3412 (dibuat 20 Oktober 2026). Detail dari shipper dipindah ke LOG-3412."
+    }
   ]
 }

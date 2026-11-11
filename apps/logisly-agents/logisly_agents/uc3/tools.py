@@ -17,6 +17,7 @@ from typing import Any
 from google.adk.tools import ToolContext
 
 from logisly_agents.config import get_settings
+from logisly_agents.uc3 import gdoc
 from logisly_agents.uc3.capacity import capacity_check as _capacity_check
 from logisly_agents.uc3.context import read_context
 from logisly_agents.uc3.jira import KEY as JIRA_KEY
@@ -24,6 +25,7 @@ from logisly_agents.uc3.jira import MockJira, TrackerError
 
 DOCS_KEY = "uc3:docs"
 PROPOSAL_KEY = "uc3:proposal"
+GDOCS_KEY = "uc3:gdocs"
 
 # Keys each proposal item may carry; the first set is required.
 _ITEM_KEYS: dict[str, tuple[set[str], set[str]]] = {
@@ -188,6 +190,42 @@ def save_document(tool_context: ToolContext, name: str, markdown: str) -> dict:
         return {"name": name, "chars": len(markdown)}
     except Exception as exc:
         return {"error": f"Gagal menyimpan dokumen: {exc}"}
+
+
+def publish_prd(tool_context: ToolContext, name: str, markdown: str) -> dict:
+    """Simpan PRD ke sesi lalu terbitkan sebagai Google Doc.
+
+    Panggil lagi dengan nama yang sama untuk memperbarui Doc yang sama.
+
+    Args:
+        name: Nama dokumen, sama dengan yang dipakai di save_document.
+        markdown: Isi PRD lengkap (markdown, tabel didukung).
+    """
+    try:
+        saved = save_document(tool_context, name, markdown)
+        if "error" in saved:
+            return saved
+        folder = get_settings().prd_folder_id
+        if not folder:
+            return {
+                "status": "unavailable",
+                "reason": "LOGISLY_PRD_FOLDER_ID belum diisi",
+                "saved": True,
+            }
+        gdocs = dict(tool_context.state.get(GDOCS_KEY) or {})
+        prev = gdocs.get(name) or {}
+        file_id = prev.get("file_id")
+        try:
+            res = gdoc.publish(f"PRD - {name}", markdown, folder, file_id=file_id)
+        except Exception as exc:
+            status = getattr(exc, "status", "")
+            reason = f"{type(exc).__name__}: {status}" if status else type(exc).__name__
+            return {"status": "unavailable", "reason": reason, "saved": True}
+        gdocs[name] = {"file_id": res["file_id"], "url": res["url"]}
+        tool_context.state[GDOCS_KEY] = gdocs  # re-assign: ADK State persists only on key assignment
+        return {"status": "published", "url": res["url"], "updated": bool(file_id)}
+    except Exception as exc:
+        return {"status": "unavailable", "reason": type(exc).__name__, "saved": True}
 
 
 def create_issue(

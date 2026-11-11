@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     model: str = "gemini-3.5-flash"
     as_of: date = date(2026, 11, 9)
     require_confirmation: bool = False
+    prd_folder_id: str = ""
 
 
 @lru_cache

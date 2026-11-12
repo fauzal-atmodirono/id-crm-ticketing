@@ -26,3 +26,9 @@ e2e/test-results/
 e2e/**/.auth/
 e2e/**/*-profile/
 e2e/**/storageState*.json
+
+# Test-console basic-auth password (local only, never commit)
+test-console-password.txt
+# Per-release VM upload bundles (patches, test-console dist); the deploy
+# scripts themselves are committed under scripts/ops/
+scripts/ops/rc[0-9]*/

@@ -8,9 +8,9 @@
 
 **Tech Stack:** Vue 3 (Options API in the existing page; new components may use `<script setup>` like `components-next`), Tailwind with Chatwoot `n-*` tokens, `dashboard/api/protonAdmin` (`listPics`, `upsertPic`, `deletePic`, `listDealers`, `upsertDealer`, `deleteDealer`, `adminRequest`), `useCustomFeatures().t` term dictionary. Fork pipeline: `deploy/chatwoot-fork/` (patches `git apply`-ed onto upstream v4.15.1 at Cloud Build time).
 
-**Spec:** user, 16 Nov 2026: "the Escalation Routing view UI, it's a mess to see and understand" and "I can't scroll down to choose my availability status". Design decisions below were made by Claude — **confirm them before execution.**
+**Spec:** user, 16 Nov 2026: "the Escalation Routing view UI, it's a mess to see and understand" and "I can't scroll down to choose my availability status". Design approved by the user on 16 Nov 2026 from the canvas https://claude.ai/artifact/CxiFLb25AKje9HDmKTopXV (artboards 1 Overview, 2 Departments, 3 Dealers, 4 Ladder, 5 Availability menu). **The canvas is the visual source of truth: match its layout, copy and states.** Its source files are in the canvas (`project/*.dc.html`); read them with the Artifact tool's `read` action when building each tab.
 
-## Design decisions (confirm before execution)
+## Design decisions (approved 16 Nov 2026)
 
 Today's problems, from the current page: four stacked blocks on one scroll (ladder form → in-flight table → PIC add form → 7-column PIC table → large dealer add form → dealer table); add forms are always open above the lists; editing turns a table row into a row of 32–48-px-wide inputs; nothing says what is missing (a dealer with no Principal silently skips step 3); the ladder's five timers are a grid of number boxes with no picture of the sequence.
 
@@ -23,6 +23,15 @@ Today's problems, from the current page: four stacked blocks on one scroll (ladd
 4. **Dealer drawer** sections: *Basics* (group name, PRO-NET region), *Members* (one email per chip, add with Enter/comma, invalid email shown red and blocks Save), *Ladder contacts* (CRE, Sales/Aftersales Mgr → Step 1; Principal → Step 3; Owner → Step 4; each with the existing "blank = rung skipped" hint).
 5. **Ladder** tab: the banner and the Enabled / Dry run / Check-every controls on top; then a vertical **timeline** of steps 1–6 — each step a card showing *when* (editable working hours for 2–5; "0 h" for 1; "48 h, fixed" for 6), *who is emailed* (role names from the dealer roles), *CC*; Save at the bottom. The "real contacts" warning stays verbatim.
 6. Wording keeps the term dictionary (`t('partner')`) everywhere the current page uses it; copy is plain English, no internal codes (`step3_hours` never shows).
+
+Added by the approved design (each is client-side only, from data the page already loads):
+
+7. **Ladder mode is one three-way choice**, Off / Dry run / Live, mapped onto the two stored booleans: Off = `enabled: false, dry_run: true`; Dry run = `enabled: true, dry_run: true`; Live = `enabled: true, dry_run: false`. Loading maps back the same way (`enabled: false` shows Off whatever `dry_run` holds). Choosing Live shows the "emails real dealer contacts" warning before Save.
+8. **"Gap" state in flight:** a row whose `next_step_no` is 3 while its dealer has no `principal`, or 4 while it has no `owner`, shows a red **Gap** chip and "Step N skipped — no Principal/Owner" instead of the due time. Other states keep `inFlightLabel` (Climbing = blue chip, everything else grey).
+9. **Ladder step warnings:** steps 3 and 4 list the dealers that will skip them ("1 dealer has no Principal (Johor Bahru)"), from the same `attentionItems` data.
+10. **Departments row chip** "PIC re-alerted (no manager)" when `escalation_manager_email` is empty; dealers legend above the list explains filled vs dashed role tags.
+11. **Tab badges** show the department and dealer counts.
+12. **Dealer-scoped users:** the backend already filters the dealer list (and 403s writes) for a user whose role has a `dealer_slugs` data scope (`features/authz/data_scope.py`). The page must not assume it sees every dealer: Overview counts and "Needs attention" describe only what the API returned, and **Add dealer** is hidden for a dealer-scoped user (the API would 403 it). Detect it with one call to the backend's existing `GET /authz/me/scope` (returns `{scope: {dealer_slugs, …}, enabled}`; `features/authz/router.py:313`) through `adminRequest`: dealer-scoped = `enabled && scope.dealer_slugs.length > 0`. A failed call counts as not scoped (fail-open, as today — the backend still enforces).
 
 ## Global Constraints
 
@@ -40,6 +49,8 @@ Today's problems, from the current page: four stacked blocks on one scroll (ladd
 - Ladder blank fields must send `null`, not `0` — a 0-hour reminder would email principals immediately.
 - An in-flight load error must show its message and not hide the rest of the Overview (today `inFlightError` is shown inline; keep it scoped to that card).
 - A long PIC/dealer list (40+ dealers) must stay usable: search filters by name, email and region, case-insensitive.
+- A dealer-scoped user (role with `dealer_slugs`) sees only their dealers: no Add dealer button, no "Needs attention" items about dealers they can't see, and the in-flight list shows only what the API returns (Task 2 and Task 4 tests).
+- Off → Live must not skip the warning: switching the mode to Live shows the "emails real dealer contacts" text before Save, and loading `enabled: false, dry_run: false` shows Off, not Live (Task 5 test `modeToFlags`/`ladderMode` round-trip).
 
 ---
 
@@ -67,10 +78,10 @@ Today's problems, from the current page: four stacked blocks on one scroll (ladd
 Work in a scratch repo built by `tests/simulate_patch_chain.sh ProtonEscalationRoutingPage.vue` (it leaves the post-0076 file); export the diff as `patches/0101-escalation-routing-refresh.patch` after each task (one patch, re-exported).
 
 **Interfaces:**
-- Produces (`routingHelpers.js`): `splitEmails(value) -> string[]`, `numOrNull(value) -> number|null`, `isEmail(s) -> boolean`, `DEALER_ROLES` (moved verbatim from the page), `LADDER_RUNGS` (moved verbatim), `contactsFrom(form) -> object`, `attentionItems(pics, dealers) -> Array<{kind: 'pic'|'dealer', id: string, text: string}>`, `ladderMode(effective) -> 'off'|'dry_run'|'live'`.
+- Produces (`routingHelpers.js`): `splitEmails(value) -> string[]`, `numOrNull(value) -> number|null`, `isEmail(s) -> boolean`, `DEALER_ROLES` (moved verbatim from the page), `LADDER_RUNGS` (moved verbatim), `contactsFrom(form) -> object`, `attentionItems(pics, dealers) -> Array<{kind: 'pic'|'dealer', id: string, text: string, detail: string}>`, `ladderMode({enabled, dry_run}) -> 'off'|'dry_run'|'live'`, `modeToFlags(mode) -> {enabled: boolean, dry_run: boolean}` (decision 7), `rowGap(row, dealers) -> string|null` ("Step 3 skipped — no Principal" or null; decision 8), `skippingDealers(step, dealers) -> string[]` (decision 9).
 - Produces (shell): props passed to every tab — `pics`, `dealers`, `ladder` (`{form, effective}`), `inFlight`, `inFlightError`; events from tabs — `saved` (shell reloads that collection), `open-record({tab, id})`.
 
-- [ ] **Step 1: Failing test** — checks in the exported patch: the shell has a tab bar with the four labels (`Overview`, `Departments`, `t('partner', 'plural')`, `Ladder`) and reads/writes `$route.query.tab`; `attentionItems` covers the five cases (missing PIC email; dealer with no members and no contacts; missing `principal` → "step 3 skipped"; missing `owner` → "step 4 skipped"; missing `region`); `LadderStatusBanner` has the three modes; in-flight rows link to the conversation route with the case id.
+- [ ] **Step 1: Failing test** — checks in the exported patch: the shell has a tab bar with the four labels (`Overview`, `Departments`, `t('partner', 'plural')`, `Ladder`) and reads/writes `$route.query.tab`; `attentionItems` covers the five cases (missing PIC email; dealer with no members and no contacts; missing `principal` → "step 3 skipped"; missing `owner` → "step 4 skipped"; missing `region`); `LadderStatusBanner` has the three modes; in-flight rows link to the conversation route with the case id and show the Gap chip when `rowGap(row, dealers)` is non-null (decision 8); tab badges show the department and dealer counts.
 - [ ] **Step 2: Run** `python -m pytest tests/test_escalation_routing_refresh_patch.py -v` → FAIL (patch missing).
 - [ ] **Step 3: Implement** the shell, helpers and Overview per Design decisions 1–2. In-flight state chip: `climbing` = slate-12 text on n-alpha-2, other states slate-10 (keep `inFlightLabel` mapping).
 - [ ] **Step 4: Run** the test and `tests/simulate_patch_chain.sh ProtonEscalationRoutingPage.vue` → all `ok`.
@@ -104,7 +115,7 @@ Work in a scratch repo built by `tests/simulate_patch_chain.sh ProtonEscalationR
 - Consumes: `RecordDrawer` (Task 3), `DEALER_ROLES`, `contactsFrom`, `isEmail` (Task 2).
 - Produces: `EmailChips` — `v-model` an array of strings; emits `invalid(boolean)`.
 
-- [ ] **Step 1: Failing test** — row shows name, region (or "No region — ARM/HOD not CC'd"), member count, and 4 role pills keyed by `DEALER_ROLES`; drawer has the three sections *Basics*, *Members*, *Ladder contacts* with the rung labels from `DEALER_ROLES`; Save is disabled while `EmailChips` reports invalid; saving with no members but one named contact is allowed; `upsertDealer` body keeps `emails` (array), `region`, `contacts` exactly as the old `createDealer` built them.
+- [ ] **Step 1: Failing test** — row shows name, region (or "No region — ARM/HOD not CC'd"), member count, and 4 role pills keyed by `DEALER_ROLES`; drawer has the three sections *Basics*, *Members*, *Ladder contacts* with the rung labels from `DEALER_ROLES`; Save is disabled while `EmailChips` reports invalid; saving with no members but one named contact is allowed; **Add dealer** is not rendered for a dealer-scoped user (decision 12); `upsertDealer` body keeps `emails` (array), `region`, `contacts` exactly as the old `createDealer` built them.
 - [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** **Step 4: Run** → pass.
 - [ ] **Step 5: Commit.**
 
@@ -119,7 +130,7 @@ Work in a scratch repo built by `tests/simulate_patch_chain.sh ProtonEscalationR
 **Interfaces:**
 - Consumes: `LADDER_RUNGS`, `numOrNull`, `LadderStatusBanner` (Task 2); the shell's `ladder` prop; saves through the exact `adminRequest(LADDER_PATH, …)` call (same method and body) as today's `saveLadder` — move that method, don't rewrite it.
 
-- [ ] **Step 1: Failing test** — six step cards in order; steps 2–5 bind to `step2_hours`…`step5_hours`; step 1 shows "0 h", step 6 shows "48 h" and is not an input; the "Reminders will be emailed to real … contacts" warning is present verbatim when enabled and not dry run; blank inputs are sent through `numOrNull`.
+- [ ] **Step 1: Failing test** — the mode control is a three-option radio group (Off / Dry run / Live) whose save body comes from `modeToFlags` and whose load comes from `ladderMode` (all three round-trip, and `{enabled:false, dry_run:false}` loads as Off); steps 3 and 4 render `skippingDealers(step, dealers)` when non-empty; six step cards in order; steps 2–5 bind to `step2_hours`…`step5_hours`; step 1 shows "0 h", step 6 shows "48 h" and is not an input; the "Reminders will be emailed to real … contacts" warning is present verbatim when enabled and not dry run; blank inputs are sent through `numOrNull`.
 - [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** **Step 4: Run** → pass, and the whole fork suite: `cd deploy/chatwoot-fork && python -m pytest tests -q`.
 - [ ] **Step 5: Commit**, then update `PATCH-INVENTORY.md` rows for 0100 and 0101.
 

@@ -39,7 +39,8 @@ router_path() {
   docker exec proton-backend python -c "import chatbot.features.chat.router as r;print(r.__file__)"
 }
 fixed_in_container() {
-  docker exec proton-backend sh -c "grep -c _receive_start_frame $(router_path)" 2>/dev/null || echo 0
+  local n; n=$(docker exec proton-backend sh -c "grep -c _receive_start_frame $(router_path)" 2>/dev/null || true)
+  echo "${n:-0}"
 }
 # Recreate proton-backend on image $1 without touching what `latest` means
 # for anyone else: point latest at $1 just for the recreate, then restore it.

@@ -10,7 +10,7 @@ stored booleans, drawn as a timeline. Every request, body and permission
 is unchanged. Design: claude.ai canvas "Escalation Routing Refresh".
 ---
 diff --git a/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
-index 6237138..728db95 100644
+index 6237138..49806ac 100644
 --- a/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
 +++ b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
 @@ -1,47 +1,25 @@
@@ -138,7 +138,7 @@ index 6237138..728db95 100644
    setup() {
      const { t } = useCustomFeatures();
      return { t };
-@@ -112,58 +42,83 @@ export default {
+@@ -112,58 +42,84 @@ export default {
      return {
        pics: [],
        dealers: [],
@@ -160,6 +160,7 @@ index 6237138..728db95 100644
        inFlightError: '',
        loadingInFlight: false,
 +      dealerScoped: false,
++      departmentScoped: false,
 +      openRecord: { kind: '', id: '' },
      };
    },
@@ -254,7 +255,7 @@ index 6237138..728db95 100644
      async load() {
        this.loading = true;
        this.errored = false;
-@@ -171,38 +126,39 @@ export default {
+@@ -171,38 +127,42 @@ export default {
          const [pics, dealers] = await Promise.all([listPics(), listDealers()]);
          this.pics = pics;
          this.dealers = dealers;
@@ -283,9 +284,12 @@ index 6237138..728db95 100644
 +      try {
 +        const data = await adminRequest('/authz/me/scope');
 +        const slugs = data?.scope?.dealer_slugs;
++        const depts = data?.scope?.departments;
 +        this.dealerScoped = Boolean(data?.enabled) && Array.isArray(slugs) && slugs.length > 0;
++        this.departmentScoped = Boolean(data?.enabled) && Array.isArray(depts) && depts.length > 0;
 +      } catch (_err) {
 +        this.dealerScoped = false;
++        this.departmentScoped = false;
 +      }
 +    },
      async loadLadder() {
@@ -314,7 +318,7 @@ index 6237138..728db95 100644
            scan_interval_seconds: stored.scan_interval_seconds ?? '',
            step2_hours: stored.step2_hours ?? '',
            step3_hours: stored.step3_hours ?? '',
-@@ -228,38 +184,11 @@ export default {
+@@ -228,38 +188,11 @@ export default {
          this.loadingInFlight = false;
        }
      },
@@ -354,7 +358,7 @@ index 6237138..728db95 100644
            dealer_replied: `${partnerLower} replied — halted`,
            acknowledged_by_agent: 'marked acknowledged — halted',
            resolved: 'case resolved — halted',
-@@ -270,748 +199,95 @@ export default {
+@@ -270,748 +203,96 @@ export default {
          }[state] || state
        );
      },
@@ -984,6 +988,7 @@ index 6237138..728db95 100644
 +          <DepartmentsTab
 +            v-else-if="tab === 'departments'"
 +            :pics="pics"
++            :can-add="!dealerScoped"
 +            :open-id="openRecord.kind === 'pic' ? openRecord.id : ''"
 +            @opened="clearOpenRecord"
 +            @saved="refresh"
@@ -1004,7 +1009,7 @@ index 6237138..728db95 100644
 +            :dealers="dealers"
 +            :roles="dealerRoles"
 +            :labels="labels"
-+            :can-add="!dealerScoped"
++            :can-add="!dealerScoped && !departmentScoped"
 +            :open-id="openRecord.kind === 'dealer' ? openRecord.id : ''"
 +            @opened="clearOpenRecord"
 +            @saved="refresh"
@@ -1176,7 +1181,7 @@ index 6237138..728db95 100644
  </template>
 diff --git a/app/javascript/dashboard/views/escalationRouting/DealerDrawer.vue b/app/javascript/dashboard/views/escalationRouting/DealerDrawer.vue
 new file mode 100644
-index 0000000..4bebe42
+index 0000000..44948d5
 --- /dev/null
 +++ b/app/javascript/dashboard/views/escalationRouting/DealerDrawer.vue
 @@ -0,0 +1,161 @@
@@ -1246,7 +1251,7 @@ index 0000000..4bebe42
 +  }
 +  saving.value = true;
 +  try {
-+    await upsertDealer(form.value.dealer.trim(), {
++    await upsertDealer(isNew.value ? form.value.dealer.trim() : props.dealer.dealer, {
 +      emails: form.value.emails.map(e => e.trim()),
 +      contacts: contactsFrom(form.value),
 +      region: form.value.region,
@@ -1512,10 +1517,10 @@ index 0000000..7cf5225
 +</template>
 diff --git a/app/javascript/dashboard/views/escalationRouting/DepartmentsTab.vue b/app/javascript/dashboard/views/escalationRouting/DepartmentsTab.vue
 new file mode 100644
-index 0000000..f1f1bde
+index 0000000..234740f
 --- /dev/null
 +++ b/app/javascript/dashboard/views/escalationRouting/DepartmentsTab.vue
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,130 @@
 +<script setup>
 +// Departments tab (patch 0101): a searchable, read-only list; Add and Edit open
 +// PicDrawer. No inline editing -- that was the old page's 7-column table of
@@ -1526,6 +1531,7 @@ index 0000000..f1f1bde
 +
 +const props = defineProps({
 +  pics: { type: Array, default: () => [] },
++  canAdd: { type: Boolean, default: true },
 +  // a department to open straight away (the Overview's "Fix")
 +  openId: { type: String, default: '' },
 +});
@@ -1583,6 +1589,7 @@ index 0000000..f1f1bde
 +        />
 +      </label>
 +      <button
++        v-if="canAdd"
 +        type="button"
 +        class="flex items-center h-10 gap-1.5 px-4 text-sm font-medium text-white rounded-lg bg-n-brand hover:opacity-90"
 +        @click="openFor(null)"
@@ -2179,10 +2186,10 @@ index 0000000..92b9b58
 +</template>
 diff --git a/app/javascript/dashboard/views/escalationRouting/PicDrawer.vue b/app/javascript/dashboard/views/escalationRouting/PicDrawer.vue
 new file mode 100644
-index 0000000..86d0e17
+index 0000000..34329d4
 --- /dev/null
 +++ b/app/javascript/dashboard/views/escalationRouting/PicDrawer.vue
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,163 @@
 +<script setup>
 +// Add / edit one department's PIC (patch 0101). Works on a COPY of the record:
 +// Cancel leaves the list exactly as it was. Same API calls and bodies as the
@@ -2251,7 +2258,8 @@ index 0000000..86d0e17
 +  }
 +  saving.value = true;
 +  try {
-+    await upsertPic(form.value.department.trim(), {
++    // an edit writes back to the stored key, exactly as the old page did
++    await upsertPic(isNew.value ? form.value.department.trim() : props.pic.department, {
 +      pic_name: form.value.pic_name,
 +      pic_email: form.value.pic_email.trim(),
 +      pic_whatsapp: form.value.pic_whatsapp,
@@ -2347,15 +2355,15 @@ index 0000000..86d0e17
 +</template>
 diff --git a/app/javascript/dashboard/views/escalationRouting/RecordDrawer.vue b/app/javascript/dashboard/views/escalationRouting/RecordDrawer.vue
 new file mode 100644
-index 0000000..560e1c2
+index 0000000..1a891b9
 --- /dev/null
 +++ b/app/javascript/dashboard/views/escalationRouting/RecordDrawer.vue
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,102 @@
 +<script setup>
 +// The right-side panel every Escalation Routing form opens in (patch 0101).
 +// Replaces the old inline row editing: one full-size form, Save/Cancel/Delete
 +// in a fixed footer. Escape and the backdrop close it like Cancel.
-+import { onBeforeUnmount, onMounted } from 'vue';
++import { nextTick, onBeforeUnmount, onMounted } from 'vue';
 +
 +const props = defineProps({
 +  open: { type: Boolean, default: false },
@@ -2367,6 +2375,16 @@ index 0000000..560e1c2
 +  deleteLabel: { type: String, default: 'Delete' },
 +});
 +const emit = defineEmits(['save', 'cancel', 'delete']);
++
++// Blur first: an email still being typed in a chips input becomes a chip on
++// blur, so the first Save click is never lost to a stale disabled state. The
++// drawer's own save() validates and explains what is missing.
++async function onSave() {
++  if (props.saving) return;
++  document.activeElement?.blur?.();
++  await nextTick();
++  emit('save');
++}
 +
 +function onKey(event) {
 +  if (props.open && event.key === 'Escape') emit('cancel');
@@ -2406,7 +2424,7 @@ index 0000000..560e1c2
 +      </div>
 +      <form
 +        class="flex flex-col flex-1 gap-6 px-6 py-5 overflow-y-auto"
-+        @submit.prevent="canSave && !saving && emit('save')"
++        @submit.prevent="onSave"
 +      >
 +        <slot />
 +        <button type="submit" class="hidden" aria-hidden="true" tabindex="-1" />
@@ -2431,9 +2449,11 @@ index 0000000..560e1c2
 +        </button>
 +        <button
 +          type="button"
-+          :disabled="saving || !canSave"
-+          class="h-10 px-5 text-sm font-medium text-white rounded-lg bg-n-brand hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-+          @click="emit('save')"
++          :disabled="saving"
++          :aria-disabled="!canSave"
++          class="h-10 px-5 text-sm font-medium text-white rounded-lg bg-n-brand hover:opacity-90 disabled:opacity-50"
++          :class="canSave ? '' : 'opacity-60'"
++          @click="onSave"
 +        >
 +          {{ saving ? 'Saving…' : 'Save' }}
 +        </button>

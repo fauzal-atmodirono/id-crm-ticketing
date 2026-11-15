@@ -88,13 +88,15 @@ def test_pic_drawer_same_api_and_body_and_works_on_a_copy():
     d = _added(f"{DIR}/PicDrawer.vue")
     assert "import { upsertPic, deletePic } from 'dashboard/api/protonAdmin';" in d
     assert "cc_emails: splitEmails(form.value.cc_emails)" in d
+    assert "upsertPic(isNew.value ? form.value.department.trim() : props.pic.department, {" in d
     assert "form.value = p\n      ? {" in d  # the drawer edits a fresh object, never the row
     assert "Delete the PIC for" in d and "window.confirm" in d
 
 
 def test_dealer_drawer_same_body_and_role_only_dealer_is_valid():
     d = _added(f"{DIR}/DealerDrawer.vue")
-    assert "upsertDealer(form.value.dealer.trim(), {" in d
+    # an edit writes back to the stored key; only a new dealer's typed name is trimmed
+    assert "upsertDealer(isNew.value ? form.value.dealer.trim() : props.dealer.dealer, {" in d
     assert "contacts: contactsFrom(form.value)," in d and "region: form.value.region," in d
     assert "form.value.emails.length > 0 || Object.keys(contactsFrom(form.value)).length > 0" in d
     for section in ("Basics", "Members", "Ladder contacts"):

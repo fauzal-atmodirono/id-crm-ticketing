@@ -1087,6 +1087,13 @@ class PhoneBridge:
             return
         await self._send_twilio(frame)
 
+    def _stamp_caller_fragment(self) -> None:
+        """Start (or extend) the turn gap at a caller fragment -- unless the
+        assistant is mid-answer, where a fragment is a late transcription or
+        noise, not a new turn."""
+        if not self._assistant_speaking:
+            self._last_caller_at = self._now()
+
     async def _on_interrupted(self) -> None:
         """Caller barge-in: the model's answer is cancelled. Stop it on the
         line (Twilio "clear") and drop what is still in flight of it. During
@@ -1574,8 +1581,7 @@ class PhoneBridge:
                 # Any caller transcript means the caller's new turn: the
                 # cancelled answer's tail is behind us.
                 self._drop_until = None
-                if not self._assistant_speaking:
-                    self._last_caller_at = self._now()
+                self._stamp_caller_fragment()
                 self._add_user_fragment(event.text)
                 # phone_language_nudge_enabled is inert since 2026-11-09: the
                 # reminder went out as send_realtime_input(text=...), which the

@@ -358,3 +358,44 @@ def test_without_fast_start_the_first_reply_is_personal() -> None:
     greetings, instruction = _greetings(_settings(phone_fast_start_enabled=False), _Service())
     assert greetings == []  # the caller speaks first
     assert "Be personal from your first sentence" in instruction and "Hi Ahmad" in instruction
+
+
+# Live evidence 15 Nov 2026: Twilio Media Streams sends {"event":"connected"}
+# BEFORE "start". The stream treated "connected" as the start frame, so the
+# CallSid, the prefetched caller lookup and the notice request were all lost:
+# a recognised web call-as caller (Ahmad) was asked for their number, and a
+# cached PDPA notice was never played.
+CONNECTED = {"event": "connected", "protocol": "Call", "version": "1.0.0"}
+
+
+def test_connected_frame_first_still_recognises_the_web_call_as_caller() -> None:
+    svc = _Service()
+    cap: dict[str, Any] = {}
+    form = {"CallSid": "CA1", "From": "client:proton-web-caller", "callAs": PHONE}
+    with TestClient(_app(_settings(), svc, _Tts(None), cap)) as client:
+        params = _params(_incoming(client, form))
+        with client.websocket_connect("/voice/phone/stream") as ws:
+            ws.send_json(CONNECTED)
+            ws.send_json(_start(params))
+            ws.send_json(MEDIA)
+    # the /incoming prefetch was used: one lookup only
+    assert svc.lookups == [(PHONE, "web_call_as")]
+    assert "Hi Ahmad" in cap["instruction"]
+    assert "cannot see the caller's phone number" not in cap["instruction"]
+
+
+def test_connected_frame_first_still_plays_the_cached_notice() -> None:
+    svc = _Service()
+    cap: dict[str, Any] = {}
+    tts = _Tts(b"\xff" * 8000)  # 1 s
+    with TestClient(_app(_settings(), svc, tts, cap)) as client:
+        _incoming(client, {**FORM, "CallSid": "CA0"})  # warms the notice
+        params = _params(_incoming(client, FORM))
+        assert params.get("notice") == "stream"
+        with client.websocket_connect("/voice/phone/stream") as ws:
+            ws.send_json(CONNECTED)
+            ws.send_json(_start(params))
+            frames = [ws.receive_json() for _ in range(4)]
+            ws.send_json({"event": "mark", "streamSid": "S1", "mark": {"name": "pdpa_notice"}})
+            ws.send_json(MEDIA)
+    assert [f["event"] for f in frames] == ["media", "media", "media", "mark"]

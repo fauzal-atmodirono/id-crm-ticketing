@@ -328,6 +328,31 @@ def _call_sid_from_start(msg: dict[str, Any]) -> str | None:
     return None
 
 
+# Twilio Media Streams sends {"event": "connected"} BEFORE "start" (live
+# evidence 15 Nov 2026). Reading only the first frame took "connected" for
+# the start frame, which lost the CallSid, the /incoming prefetch, the signed
+# caller parameters and the notice request: a recognised caller was asked
+# for their number and a cached PDPA notice was never played. Skip the
+# frames before "start", bounded so a peer that never sends one cannot hold
+# the socket in this loop.
+_MAX_FRAMES_BEFORE_START = 5
+
+
+async def _receive_start_frame(websocket: WebSocket) -> dict[str, Any]:
+    """The Media Streams "start" frame, skipping "connected" (and any other
+    pre-start frame) up to ``_MAX_FRAMES_BEFORE_START``. The last frame read
+    is returned when no "start" arrives, so the call proceeds as before
+    (unknown caller) instead of failing."""
+    msg: dict[str, Any] = {}
+    for _ in range(_MAX_FRAMES_BEFORE_START + 1):
+        raw = json.loads(await websocket.receive_text())
+        msg = raw if isinstance(raw, dict) else {}
+        if msg.get("event") == "start" or isinstance(msg.get("start"), dict):
+            return msg
+    _log.warning("phone_stream_no_start_frame", frames=_MAX_FRAMES_BEFORE_START + 1)
+    return msg
+
+
 def _card_caption(product: Any) -> str:
     """Build the caption for a single WhatsApp image card (bold title + details)."""
     caption = f"*{_sanitize_for_whatsapp(product.title)}*"
@@ -460,6 +485,18 @@ def _ms(seconds: float) -> int:
     return round(seconds * 1000)
 
 
+# 2026-11-16 call gaps (PHONE_KB_FILLER_ENABLED): the caller hears a short
+# "let me check" instead of 1-3 s of silence while kb_search runs. It lives in
+# the system instruction only -- never as injected realtime text, which the
+# Live API treats as a caller turn (the 27 Oct double-answer bug).
+# How long startup waits for the notice synthesis (2026-11-16 call gaps).
+_NOTICE_PRIME_TIMEOUT_SECONDS = 10
+
+_KB_FILLER_INSTRUCTION = (
+    "Before you call kb_search, first say one short phrase in the caller's language, "
+    "such as 'Let me check that for you.', then call it; never say it twice in one "
+    "answer and never use it when you answer without kb_search. "
+)
 _HANDOFF_GUARDRAILS = (
     "NEVER hand off because you could not hear or understand the caller. Phone audio "
     "is lossy and callers switch languages mid-sentence, so when a turn is unclear, ASK "
@@ -555,6 +592,13 @@ class ChatRouter:
             orchestrator._settings.phone_token_rate_window_seconds,
         )
         self.router = APIRouter(tags=["chat"])
+        # 2026-11-16 call gaps: the PDPA notice is synthesised before the app
+        # takes traffic, so the first call after a restart also gets the
+        # ~10 s-faster streamed notice instead of <Say>.
+        # FastAPI 0.137 runs an included router's startup handlers twice (its
+        # copy on the app plus the merged lifespan), hence the once-only flag.
+        self._notice_warm_started = False
+        self.router.add_event_handler("startup", self._warm_phone_notice)
 
         self.router.add_api_route("/webhooks/chatwoot", self.chatwoot_webhook, methods=["POST"])
         self.router.add_api_route("/webhooks/zendesk", self.zendesk_webhook, methods=["POST"])
@@ -1840,6 +1884,28 @@ class ChatRouter:
                 parameters = {**(parameters or {}), _NOTICE_PARAM: "stream"}
         return connect_stream_twiml(self._phone_wss_url(), announcement, parameters)
 
+    async def _warm_phone_notice(self) -> None:
+        """Startup: prime the notice audio when fast start would use it.
+        Bounded and never raises -- a TTS outage must not stop the app from
+        starting; calls then fall back to <Say> and warm the cache as before."""
+        if self._notice_warm_started:
+            return
+        self._notice_warm_started = True
+        settings = self.orchestrator._settings
+        if not (
+            settings.phone_fast_start_enabled
+            and settings.phone_recording_enabled
+            and settings.phone_recording_announcement
+        ):
+            return
+        try:
+            await asyncio.wait_for(
+                self._announcement_audio.prime(settings.phone_recording_announcement),
+                timeout=_NOTICE_PRIME_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            _log.warning("phone_announcement_prime_failed", error_type=type(exc).__name__)
+
     async def _caller_from_start(
         self, start_msg: dict[str, Any], prefetch: PrefetchEntry | None = None
     ) -> CallerContext | None:
@@ -1964,8 +2030,7 @@ class ChatRouter:
             # wall-clock time as the previous order, just swapped -- bridge.
             # stream_sid is still set (via bridge.handle_twilio below) before
             # pump_task begins forwarding audio frames.
-            start_raw = await websocket.receive_text()
-            start_msg = json.loads(start_raw)
+            start_msg = await _receive_start_frame(websocket)
             call_sid = _call_sid_from_start(start_msg)
             prefetch = self._caller_prefetch.take(call_sid)
             # 2026-11-09 fast start: play the PDPA notice FIRST, while the
@@ -2090,6 +2155,7 @@ class ChatRouter:
                 + build_language_instruction(start_language)
                 + "Use the kb_search tool to ground answers in the "
                 "Proton knowledge base before giving facts. "
+                + (_KB_FILLER_INSTRUCTION if settings.phone_kb_filler_enabled else "")
                 + caller_instruction
                 + _HANDOFF_GUARDRAILS
                 + "If you cannot resolve the caller's "

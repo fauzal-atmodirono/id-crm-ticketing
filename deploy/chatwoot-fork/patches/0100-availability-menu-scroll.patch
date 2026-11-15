@@ -1,0 +1,29 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] availability menu: scroll a long status list
+
+Since 0065 the sidebar "Set your availability" list shows the operator's
+whole custom status catalogue plus Offline. DropdownBody's <ul> has no
+height limit, so on a laptop screen the lower entries ran off the bottom
+with no way to reach them. Cap the list at min(20rem, 50vh) and scroll it.
+---
+diff --git a/app/javascript/dashboard/components-next/sidebar/SidebarProfileMenuStatus.vue b/app/javascript/dashboard/components-next/sidebar/SidebarProfileMenuStatus.vue
+index f218829..36fdc37 100644
+--- a/app/javascript/dashboard/components-next/sidebar/SidebarProfileMenuStatus.vue
++++ b/app/javascript/dashboard/components-next/sidebar/SidebarProfileMenuStatus.vue
+@@ -194,7 +194,15 @@ function changeAvailabilityStatus(availability) {
+               </div>
+             </Button>
+           </template>
+-          <DropdownBody class="min-w-32 z-20">
++          <!--
++            Patch 0100: 0065 turned this list into the operator's whole status
++            catalogue, and DropdownBody's <ul> has no height limit -- with a
++            long catalogue the lower entries (Offline among them) ran off the
++            screen with no way to scroll to them. Cap the list and scroll it.
++          -->
++          <DropdownBody
++            class="min-w-32 z-20 [&>ul]:max-h-[min(20rem,50vh)] [&>ul]:overflow-y-auto"
++          >
+             <DropdownItem
+               v-for="status in availabilityStatuses"
+               :key="status.value"

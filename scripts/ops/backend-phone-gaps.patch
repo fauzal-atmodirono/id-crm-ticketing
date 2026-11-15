@@ -1,0 +1,292 @@
+diff --git a/backend/apps/backend/src/chatbot/features/chat/phone/bridge.py b/backend/apps/backend/src/chatbot/features/chat/phone/bridge.py
+index 3bde8c59..fb50b8ba 100644
+--- a/backend/apps/backend/src/chatbot/features/chat/phone/bridge.py
++++ b/backend/apps/backend/src/chatbot/features/chat/phone/bridge.py
+@@ -284,6 +284,16 @@ class PhoneBridge:
+         self._timing = timing
+         self._stream_started_at = stream_started_at
+         self._timing_logged = False
++        # 2026-11-16 call gaps: the silence a caller hears after they stop
++        # talking (last caller fragment -> next model audio), one
++        # phone_turn_timing line per assistant turn. None = no caller words
++        # pending (the greeting, or the gap already logged).
++        self._last_caller_at: float | None = None
++        self._turn_no = 0
++        # True from the assistant's first forwarded audio until TurnComplete /
++        # Interrupted: fragments arriving meanwhile (late transcription, line
++        # noise) are not a new caller turn and must not log a phantom gap.
++        self._assistant_speaking = False
+         # 2026-11-09 caller context. `caller_service` is passed only when
+         # phone_caller_context_enabled is on; None keeps every code path
+         # below exactly as it was (anonymous ticket, no caller tools, the old
+@@ -1056,6 +1066,16 @@ class PhoneBridge:
+             return
+         if not self._timing_logged and self._stream_started_at is not None:
+             self._log_timing(round((self._now() - self._stream_started_at) * 1000))
++        if self._last_caller_at is not None:
++            self._turn_no += 1
++            _log.info(
++                "phone_turn_timing",
++                call_sid=self.call_sid,
++                turn=self._turn_no,
++                gap_ms=round((self._now() - self._last_caller_at) * 1000),
++            )
++            self._last_caller_at = None
++        self._assistant_speaking = True
+         mulaw = pcm24k_to_mulaw8k(event.pcm)
+         frame: dict[str, object] = {
+             "event": "media",
+@@ -1067,6 +1087,13 @@ class PhoneBridge:
+             return
+         await self._send_twilio(frame)
+ 
++    def _stamp_caller_fragment(self) -> None:
++        """Start (or extend) the turn gap at a caller fragment -- unless the
++        assistant is mid-answer, where a fragment is a late transcription or
++        noise, not a new turn."""
++        if not self._assistant_speaking:
++            self._last_caller_at = self._now()
++
+     async def _on_interrupted(self) -> None:
+         """Caller barge-in: the model's answer is cancelled. Stop it on the
+         line (Twilio "clear") and drop what is still in flight of it. During
+@@ -1347,10 +1374,43 @@ class PhoneBridge:
+             self.transcript.append((role, text))
+ 
+     async def _handle_tool_call(self, event: ToolCall) -> None:
++        """Answer one tool call, timed (phone_tool_timing: name, ms, outcome;
++        never the arguments). A tool that raises is still answered with an
++        error -- an unanswered tool call leaves the model, and the caller, in
++        silence for the rest of the call."""
++        started = self._now()
++        outcome = "ok"
++        try:
++            outcome = await self._dispatch_tool_call(event)
++        except Exception as exc:
++            outcome = "error"
++            _log.warning(
++                "phone_tool_failed", name=event.name, call_id=event.id, error_type=type(exc).__name__
++            )
++            await self._live.send_tool_response(
++                event.id, event.name, {"error": f"tool failed: {event.name}"}
++            )
++        finally:
++            _log.info(
++                "phone_tool_timing",
++                call_sid=self.call_sid,
++                name=event.name,
++                ms=round((self._now() - started) * 1000),
++                outcome=outcome,
++            )
++
++    async def _dispatch_tool_call(self, event: ToolCall) -> str:
++        """Run the tool and answer it; returns the phone_tool_timing outcome
++        ("ok", or kb_search's "timeout"/"error" status)."""
+         if event.name == "kb_search":
+-            result = await dispatch_kb_search(event.args, self._knowledge)
++            result = await dispatch_kb_search(
++                event.args,
++                self._knowledge,
++                timeout_seconds=self._settings.phone_kb_search_timeout_seconds,
++            )
+             await self._live.send_tool_response(event.id, event.name, result)
+-        elif event.name == "request_human_handoff":
++            return str(result.get("status") or "ok")
++        if event.name == "request_human_handoff":
+             self.handoff = {
+                 "reason": str(event.args.get("reason") or ""),
+                 "summary": str(event.args.get("summary") or ""),
+@@ -1391,6 +1451,7 @@ class PhoneBridge:
+             await self._live.send_tool_response(
+                 event.id, event.name, {"error": f"unknown tool: {event.name}"}
+             )
++        return "ok"
+ 
+     async def _attempt_transfer(self) -> str:  # noqa: PLR0911 -- each early return is a distinct, documented fallback reason
+         """Package C Task 6: try to redirect the live call into a real
+@@ -1510,14 +1571,17 @@ class PhoneBridge:
+             if isinstance(event, AudioOut):
+                 await self._forward_model_audio(event)
+             elif isinstance(event, Interrupted):
++                self._assistant_speaking = False
+                 await self._on_interrupted()
+             elif isinstance(event, TurnComplete):
++                self._assistant_speaking = False
+                 self._drop_until = None
+                 self._assistant_turn_ended = True
+             elif isinstance(event, InputTranscript):
+                 # Any caller transcript means the caller's new turn: the
+                 # cancelled answer's tail is behind us.
+                 self._drop_until = None
++                self._stamp_caller_fragment()
+                 self._add_user_fragment(event.text)
+                 # phone_language_nudge_enabled is inert since 2026-11-09: the
+                 # reminder went out as send_realtime_input(text=...), which the
+diff --git a/backend/apps/backend/src/chatbot/features/chat/phone/call_start_cache.py b/backend/apps/backend/src/chatbot/features/chat/phone/call_start_cache.py
+index 6dc7fd2d..5e5a1e1c 100644
+--- a/backend/apps/backend/src/chatbot/features/chat/phone/call_start_cache.py
++++ b/backend/apps/backend/src/chatbot/features/chat/phone/call_start_cache.py
+@@ -72,6 +72,18 @@ class AnnouncementAudio:
+         except RuntimeError:  # no running loop (sync caller): stay cold
+             coro.close()
+ 
++    async def prime(self, text: str) -> None:
++        """Synthesise ``text`` now and return once it is cached (or failed),
++        so the first call after startup already streams the notice. Awaits a
++        warm() already in flight instead of starting a second synthesis.
++        Never raises; the caller bounds how long it waits."""
++        if self._synth is None or not text or self.get(text) is not None:
++            return
++        if self._task is not None and not self._task.done():
++            await self._task
++            return
++        await self._run(text)
++
+     async def _run(self, text: str) -> None:
+         if self._synth is None:
+             return
+diff --git a/backend/apps/backend/src/chatbot/features/chat/phone/kb_tool.py b/backend/apps/backend/src/chatbot/features/chat/phone/kb_tool.py
+index 15003c32..2fa672b2 100644
+--- a/backend/apps/backend/src/chatbot/features/chat/phone/kb_tool.py
++++ b/backend/apps/backend/src/chatbot/features/chat/phone/kb_tool.py
+@@ -2,13 +2,17 @@
+ 
+ from __future__ import annotations
+ 
++import asyncio
+ from typing import TYPE_CHECKING, Any
+ 
++import structlog
+ from google.genai import types
+ 
+ if TYPE_CHECKING:
+     from chatbot.features.chat.ports import KnowledgePort
+ 
++_log = structlog.get_logger(__name__)
++
+ KB_SEARCH_TOOL = types.Tool(
+     function_declarations=[
+         types.FunctionDeclaration(
+@@ -30,11 +34,27 @@ KB_SEARCH_TOOL = types.Tool(
+ 
+ 
+ async def dispatch_kb_search(
+-    args: dict[str, object], knowledge_port: KnowledgePort
++    args: dict[str, object], knowledge_port: KnowledgePort, *, timeout_seconds: float = 0.0
+ ) -> dict[str, Any]:
+-    """Run kb_search and shape the result for send_tool_response."""
++    """Run kb_search and shape the result for send_tool_response.
++
++    Never raises, and never waits past `timeout_seconds` when it is > 0
++    (0 = no cap, the pre-2026-11-16 behaviour): a lookup that is slow or
++    failing comes back as no results with a "timeout"/"error" status, so the
++    model answers without the KB instead of the caller hearing silence.
++    """
+     query = str(args.get("query") or "").strip()
+     if not query:
+         return {"results": []}
+-    articles = await knowledge_port.search_kb(query, limit=3)
++    search = knowledge_port.search_kb(query, limit=3)
++    try:
++        if timeout_seconds > 0:
++            articles = await asyncio.wait_for(search, timeout=timeout_seconds)
++        else:
++            articles = await search
++    except TimeoutError:
++        return {"results": [], "status": "timeout"}
++    except Exception as exc:
++        _log.warning("phone_kb_search_failed", error_type=type(exc).__name__)
++        return {"results": [], "status": "error"}
+     return {"results": [{"title": a.title, "content": a.content, "url": a.url} for a in articles]}
+diff --git a/backend/apps/backend/src/chatbot/features/chat/router.py b/backend/apps/backend/src/chatbot/features/chat/router.py
+index 39d59a84..37722795 100644
+--- a/backend/apps/backend/src/chatbot/features/chat/router.py
++++ b/backend/apps/backend/src/chatbot/features/chat/router.py
+@@ -485,6 +485,18 @@ def _ms(seconds: float) -> int:
+     return round(seconds * 1000)
+ 
+ 
++# 2026-11-16 call gaps (PHONE_KB_FILLER_ENABLED): the caller hears a short
++# "let me check" instead of 1-3 s of silence while kb_search runs. It lives in
++# the system instruction only -- never as injected realtime text, which the
++# Live API treats as a caller turn (the 27 Oct double-answer bug).
++# How long startup waits for the notice synthesis (2026-11-16 call gaps).
++_NOTICE_PRIME_TIMEOUT_SECONDS = 10
++
++_KB_FILLER_INSTRUCTION = (
++    "Before you call kb_search, first say one short phrase in the caller's language, "
++    "such as 'Let me check that for you.', then call it; never say it twice in one "
++    "answer and never use it when you answer without kb_search. "
++)
+ _HANDOFF_GUARDRAILS = (
+     "NEVER hand off because you could not hear or understand the caller. Phone audio "
+     "is lossy and callers switch languages mid-sentence, so when a turn is unclear, ASK "
+@@ -580,6 +592,13 @@ class ChatRouter:
+             orchestrator._settings.phone_token_rate_window_seconds,
+         )
+         self.router = APIRouter(tags=["chat"])
++        # 2026-11-16 call gaps: the PDPA notice is synthesised before the app
++        # takes traffic, so the first call after a restart also gets the
++        # ~10 s-faster streamed notice instead of <Say>.
++        # FastAPI 0.137 runs an included router's startup handlers twice (its
++        # copy on the app plus the merged lifespan), hence the once-only flag.
++        self._notice_warm_started = False
++        self.router.add_event_handler("startup", self._warm_phone_notice)
+ 
+         self.router.add_api_route("/webhooks/chatwoot", self.chatwoot_webhook, methods=["POST"])
+         self.router.add_api_route("/webhooks/zendesk", self.zendesk_webhook, methods=["POST"])
+@@ -1865,6 +1884,28 @@ class ChatRouter:
+                 parameters = {**(parameters or {}), _NOTICE_PARAM: "stream"}
+         return connect_stream_twiml(self._phone_wss_url(), announcement, parameters)
+ 
++    async def _warm_phone_notice(self) -> None:
++        """Startup: prime the notice audio when fast start would use it.
++        Bounded and never raises -- a TTS outage must not stop the app from
++        starting; calls then fall back to <Say> and warm the cache as before."""
++        if self._notice_warm_started:
++            return
++        self._notice_warm_started = True
++        settings = self.orchestrator._settings
++        if not (
++            settings.phone_fast_start_enabled
++            and settings.phone_recording_enabled
++            and settings.phone_recording_announcement
++        ):
++            return
++        try:
++            await asyncio.wait_for(
++                self._announcement_audio.prime(settings.phone_recording_announcement),
++                timeout=_NOTICE_PRIME_TIMEOUT_SECONDS,
++            )
++        except Exception as exc:
++            _log.warning("phone_announcement_prime_failed", error_type=type(exc).__name__)
++
+     async def _caller_from_start(
+         self, start_msg: dict[str, Any], prefetch: PrefetchEntry | None = None
+     ) -> CallerContext | None:
+@@ -2114,6 +2155,7 @@ class ChatRouter:
+                 + build_language_instruction(start_language)
+                 + "Use the kb_search tool to ground answers in the "
+                 "Proton knowledge base before giving facts. "
++                + (_KB_FILLER_INSTRUCTION if settings.phone_kb_filler_enabled else "")
+                 + caller_instruction
+                 + _HANDOFF_GUARDRAILS
+                 + "If you cannot resolve the caller's "
+diff --git a/backend/apps/backend/src/chatbot/platform/config.py b/backend/apps/backend/src/chatbot/platform/config.py
+index cd517ce2..051fbb89 100644
+--- a/backend/apps/backend/src/chatbot/platform/config.py
++++ b/backend/apps/backend/src/chatbot/platform/config.py
+@@ -493,6 +493,13 @@ class Settings(BaseSettings):
+     # API's NO_INTERRUPTION: the assistant always finishes its sentence --
+     # for a line so noisy that LOW sensitivity still cuts it off.
+     gemini_live_barge_in_enabled: bool = True
++    # 2026-11-16 call gaps: cap on the phone's kb_search tool, in seconds.
++    # 0 = no cap (today's behaviour). Over the cap the tool answers with no
++    # results and the AI answers without the KB instead of staying silent.
++    phone_kb_search_timeout_seconds: float = 0.0
++    # The phone AI says a short "let me check" before a kb_search lookup
++    # instead of going silent. False = today's system instruction, unchanged.
++    phone_kb_filler_enabled: bool = False
+     gemini_live_voice: str = "Kore"
+     # Optional output language hint (e.g. "ms-MY" for Bahasa Melayu). Empty = let
+     # the model auto-detect. Only honored by half-cascade Live models; native-audio

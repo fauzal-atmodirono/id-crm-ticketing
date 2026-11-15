@@ -1,0 +1,2599 @@
+From: Proton CRM <noreply@proton.local>
+Subject: [PATCH] Escalation Routing: tabs, drawers and a Needs attention list
+
+The page was one long scroll of always-open forms above wide tables edited
+inline. It becomes four tabs (Overview, Departments, dealers, Ladder) in
+?tab=; lists open a side drawer to edit; the Overview says what is
+misconfigured (a dealer with no Principal skips step 3) and what is in
+flight; the ladder is an Off / Dry run / Live choice over the same two
+stored booleans, drawn as a timeline. Every request, body and permission
+is unchanged. Design: claude.ai canvas "Escalation Routing Refresh".
+---
+diff --git a/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
+index 6237138..49806ac 100644
+--- a/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
++++ b/app/javascript/dashboard/views/ProtonEscalationRoutingPage.vue
+@@ -1,47 +1,25 @@
+-<!-- ProtonEscalationRoutingPage.vue — OUR file. Escalation Routing admin:
+-     department -> PIC (person-in-charge) contact mapping, and dealer ->
+-     email mapping, backing SLA/escalation notification routing. Two
+-     independent add/edit/delete tables sharing one page shell (mirrors
+-     ProtonRsaPage.vue's shell: header, n-* tokens, useAlert toasts, inline
+-     row edit). department/dealer are the PUT/DELETE URL path key in the
+-     backend (pic_admin_router.py) and so are immutable once created —
+-     editing a row updates the other fields via that same key; changing the
+-     key itself means delete + re-add. -->
++<!--
++  Escalation Routing (patch 0039, rebuilt by patch 0101 on 16 Nov 2026).
++
++  The page used to be one 1,000-line scroll: the ladder form, an in-flight
++  table, an always-open PIC form above a 7-column table edited inline through
++  32-px inputs, then the same again for dealers. 0101 keeps every request,
++  body and permission exactly as they were and changes only how it reads:
++  four tabs (?tab= in the URL), lists that open a side drawer to edit, and an
++  Overview that says what is misconfigured. This file is the shell: it loads
++  everything once and hands it to the tabs in ./escalationRouting/.
++-->
+ <script>
+ import { useAlert } from 'dashboard/composables';
+ import { useCustomFeatures } from 'dashboard/composables/useCustomFeatures';
+-import {
+-  listPics,
+-  upsertPic,
+-  deletePic,
+-  listDealers,
+-  upsertDealer,
+-  deleteDealer,
+-  adminRequest,
+-} from 'dashboard/api/protonAdmin';
+-
+-// The ladder's three endpoints are called through the shared adminRequest
+-// rather than through named helpers in protonAdmin.js: they are used by this
+-// page and nothing else, and keeping them here means this patch touches one
+-// file. adminRequest still carries the Chatwoot session triplet, so they are
+-// gated by `escalation.manage` exactly like everything else on this page.
+-const LADDER_PATH = '/admin/escalation/ladder';
++import { listPics, listDealers, adminRequest } from 'dashboard/api/protonAdmin';
++import OverviewTab from './escalationRouting/OverviewTab.vue';
++import DepartmentsTab from './escalationRouting/DepartmentsTab.vue';
++import DealersTab from './escalationRouting/DealersTab.vue';
++import LadderTab from './escalationRouting/LadderTab.vue';
++import { DEALER_ROLES, LADDER_PATH } from './escalationRouting/routingHelpers';
+ 
+-// Blank input means "inherit the deployment's value", which the API expresses
+-// as null. '' would be a 422 and 0 would be a real (and very wrong) timer.
+-function numOrNull(value) {
+-  const raw = String(value ?? '').trim();
+-  if (!raw) return null;
+-  const n = Number(raw);
+-  return Number.isNaN(n) ? null : n;
+-}
+-
+-const LADDER_RUNGS = [
+-  { key: 'step2_hours', label: 'Step 2 — acknowledgement due', hint: 'Dealer CRE is expected to reply by now. Nothing is sent.' },
+-  { key: 'step3_hours', label: 'Step 3 — 1st reminder', hint: 'Emails the Dealer Principal.' },
+-  { key: 'step4_hours', label: 'Step 4 — 2nd reminder', hint: 'Emails the Dealer Owner.' },
+-  { key: 'step5_hours', label: 'Step 5 — telephone', hint: 'Raises a call task. Sends no email.' },
+-];
++const TABS = ['overview', 'departments', 'dealers', 'ladder'];
+ 
+ const EMPTY_LADDER_FORM = {
+   enabled: false,
+@@ -53,57 +31,9 @@ const EMPTY_LADDER_FORM = {
+   step5_hours: '',
+ };
+ 
+-const EMPTY_PIC_FORM = {
+-  department: '',
+-  pic_name: '',
+-  pic_email: '',
+-  pic_whatsapp: '',
+-  cc_emails: '', // comma-separated in the UI; split to an array on submit
+-  // Tier-2 goes here when the first alert went unanswered. Empty falls back
+-  // to re-alerting the PIC -- better the same person twice than nobody.
+-  escalation_manager_email: '',
+-};
+-
+-const EMPTY_DEALER_FORM = {
+-  dealer: '',
+-  emails: '', // comma-separated in the UI; split to an array on submit
+-  // The escalation ladder's named roles. Steps 3 and 4 exist to reach a
+-  // MORE SENIOR person than step 1 did, which the flat group above cannot
+-  // express -- a rung whose role is blank is skipped and logged, never
+-  // re-addressed to whoever else is configured.
+-  region: '',
+-  cre: '',
+-  sales_aftersales_mgr: '',
+-  principal: '',
+-  owner: '',
+-};
+-
+-// role key -> the label an operator recognises, and which rung uses it.
+-const DEALER_ROLES = [
+-  { key: 'cre', label: 'Dealer CRE', rung: 'Step 1' },
+-  { key: 'sales_aftersales_mgr', label: 'Sales / Aftersales Mgr', rung: 'Step 1' },
+-  { key: 'principal', label: 'Dealer Principal', rung: 'Step 3 — 1st reminder' },
+-  { key: 'owner', label: 'Dealer Owner', rung: 'Step 4 — 2nd reminder' },
+-];
+-
+-function contactsFrom(form) {
+-  const out = {};
+-  DEALER_ROLES.forEach(({ key }) => {
+-    const value = String(form[key] || '').trim();
+-    if (value) out[key] = value;
+-  });
+-  return out;
+-}
+-
+-function splitEmails(value) {
+-  return String(value || '')
+-    .split(',')
+-    .map(s => s.trim())
+-    .filter(Boolean);
+-}
+-
+ export default {
+   name: 'ProtonEscalationRoutingPage',
++  components: { OverviewTab, DepartmentsTab, DealersTab, LadderTab },
+   setup() {
+     const { t } = useCustomFeatures();
+     return { t };
+@@ -112,58 +42,84 @@ export default {
+     return {
+       pics: [],
+       dealers: [],
+-      picForm: { ...EMPTY_PIC_FORM },
+-      dealerForm: { ...EMPTY_DEALER_FORM },
+-      editingPicDepartment: null,
+-      editPicForm: { ...EMPTY_PIC_FORM },
+-      editingDealerName: null,
+-      editDealerForm: { ...EMPTY_DEALER_FORM },
+       loading: true,
+       errored: false,
+-      savingPic: false,
+-      savingDealer: false,
+       ladderForm: { ...EMPTY_LADDER_FORM },
+       ladderEffective: null,
+-      ladderEnvDefaults: null,
+-      savingLadder: false,
+       inFlight: [],
+       inFlightError: '',
+       loadingInFlight: false,
++      dealerScoped: false,
++      departmentScoped: false,
++      openRecord: { kind: '', id: '' },
+     };
+   },
+   computed: {
+-    // Built from the module-level role/rung tables on every render rather
+-    // than baked into data() once, so a term dictionary that finishes
+-    // loading after this component mounts (see useCustomFeatures'
+-    // fail-open async load) still reaches these labels reactively instead
+-    // of freezing them at their key-name fallback.
+-    dealerRoles() {
+-      const labels = {
+-        cre: this.t('partner_rep'),
++    tab() {
++      const q = this.$route?.query?.tab;
++      return TABS.includes(q) ? q : 'overview';
++    },
++    // Built on every render so a term dictionary that finishes loading after
++    // mount (useCustomFeatures loads fail-open, async) still reaches labels.
++    labels() {
++      return {
++        partner: this.t('partner', 'lower'),
++        partnerLower: this.t('partner', 'lower'),
++        partnerTitle: this.t('partner'),
++        partnerPlural: this.t('partner', 'plural'),
++        partnerPluralLower: this.t('partner', 'plural_lower'),
++        rep: this.t('partner_rep'),
+         principal: this.t('partner_principal'),
+         owner: this.t('partner_owner'),
+       };
+-      return DEALER_ROLES.map(role => ({
+-        ...role,
+-        label: labels[role.key] || role.label,
+-      }));
+     },
+-    ladderRungs() {
+-      const hints = {
+-        step2_hours: `${this.t('partner_rep')} is expected to reply by now. Nothing is sent.`,
+-        step3_hours: `Emails the ${this.t('partner_principal')}.`,
+-        step4_hours: `Emails the ${this.t('partner_owner')}.`,
+-      };
+-      return LADDER_RUNGS.map(rung => ({
+-        ...rung,
+-        hint: hints[rung.key] || rung.hint,
+-      }));
++    dealerRoles() {
++      const names = { cre: this.labels.rep, principal: this.labels.principal, owner: this.labels.owner };
++      return DEALER_ROLES.map(role => ({ ...role, label: names[role.key] || role.label }));
++    },
++    tabs() {
++      return [
++        { id: 'overview', label: 'Overview' },
++        { id: 'departments', label: 'Departments', count: this.pics.length },
++        { id: 'dealers', label: this.labels.partnerPlural, count: this.dealers.length },
++        { id: 'ladder', label: 'Ladder' },
++      ];
+     },
+   },
+   async mounted() {
+     await this.load();
+   },
+   methods: {
++    selectTab(id) {
++      if (id === this.tab) return;
++      this.$router.replace({ query: { ...this.$route.query, tab: id } });
++    },
++    onTabKey(event, index) {
++      const step = { ArrowRight: 1, ArrowLeft: -1 }[event.key];
++      if (!step) return;
++      const next = this.tabs[(index + step + this.tabs.length) % this.tabs.length];
++      this.selectTab(next.id);
++      this.$nextTick(() => this.$refs[`tab-${next.id}`]?.[0]?.focus());
++    },
++    openFromOverview({ kind, id }) {
++      this.openRecord = { kind, id };
++      this.selectTab(kind === 'pic' ? 'departments' : 'dealers');
++    },
++    clearOpenRecord() {
++      this.openRecord = { kind: '', id: '' };
++    },
++    // After a save: reload in place, without the page-wide "Loading…" that
++    // would unmount the tab the operator is on.
++    async refresh() {
++      try {
++        const [pics, dealers] = await Promise.all([listPics(), listDealers()]);
++        this.pics = pics;
++        this.dealers = dealers;
++      } catch (err) {
++        useAlert('Failed to reload escalation routing: ' + (err.message || String(err)));
++      }
++      await this.loadLadder();
++    },
+     async load() {
+       this.loading = true;
+       this.errored = false;
+@@ -171,38 +127,42 @@ export default {
+         const [pics, dealers] = await Promise.all([listPics(), listDealers()]);
+         this.pics = pics;
+         this.dealers = dealers;
+-        // Deliberately after the two awaits above and not inside them: a
+-        // tenant whose backend predates the ladder endpoints should still get
+-        // a working PIC/dealer page, not a blank one.
+-        await this.loadLadder();
++        // After the two awaits, not inside them: a backend that predates the
++        // ladder or scope endpoints still gets a working PIC/dealer page.
++        await Promise.all([this.loadLadder(), this.loadScope()]);
+       } catch (err) {
+         this.errored = true;
+-        useAlert(
+-          'Failed to load escalation routing: ' + (err.message || String(err))
+-        );
++        useAlert('Failed to load escalation routing: ' + (err.message || String(err)));
+       } finally {
+         this.loading = false;
+       }
+     },
+-    // ── Escalation ladder ───────────────────────────────────────────────
++    // A dealer-scoped user (role with a dealer_slugs data scope) cannot create
++    // a dealer -- the API would 403. Fail-open: no answer = not scoped; the
++    // backend still enforces either way.
++    async loadScope() {
++      try {
++        const data = await adminRequest('/authz/me/scope');
++        const slugs = data?.scope?.dealer_slugs;
++        const depts = data?.scope?.departments;
++        this.dealerScoped = Boolean(data?.enabled) && Array.isArray(slugs) && slugs.length > 0;
++        this.departmentScoped = Boolean(data?.enabled) && Array.isArray(depts) && depts.length > 0;
++      } catch (_err) {
++        this.dealerScoped = false;
++        this.departmentScoped = false;
++      }
++    },
+     async loadLadder() {
+       try {
+         const data = await adminRequest(LADDER_PATH);
+         const stored = data.stored || {};
++        const eff = data.effective || {};
+         this.ladderEffective = data.effective || null;
+-        this.ladderEnvDefaults = data.env_defaults || null;
++        // A stored null means "inherit": show what is actually in force.
++        const pick = key => (stored[key] === null || stored[key] === undefined ? Boolean(eff[key]) : Boolean(stored[key]));
+         this.ladderForm = {
+-          // A stored null means "inherit", so the checkbox shows what is
+-          // actually in force rather than an unchecked box next to a
+-          // running ladder.
+-          enabled:
+-            stored.enabled === null || stored.enabled === undefined
+-              ? Boolean(data.effective && data.effective.enabled)
+-              : Boolean(stored.enabled),
+-          dry_run:
+-            stored.dry_run === null || stored.dry_run === undefined
+-              ? Boolean(data.effective && data.effective.dry_run)
+-              : Boolean(stored.dry_run),
++          enabled: pick('enabled'),
++          dry_run: pick('dry_run'),
+           scan_interval_seconds: stored.scan_interval_seconds ?? '',
+           step2_hours: stored.step2_hours ?? '',
+           step3_hours: stored.step3_hours ?? '',
+@@ -228,38 +188,11 @@ export default {
+         this.loadingInFlight = false;
+       }
+     },
+-    async saveLadder() {
+-      this.savingLadder = true;
+-      try {
+-        await adminRequest(LADDER_PATH, {
+-          method: 'PUT',
+-          body: {
+-            enabled: this.ladderForm.enabled,
+-            dry_run: this.ladderForm.dry_run,
+-            scan_interval_seconds: numOrNull(this.ladderForm.scan_interval_seconds),
+-            step2_hours: numOrNull(this.ladderForm.step2_hours),
+-            step3_hours: numOrNull(this.ladderForm.step3_hours),
+-            step4_hours: numOrNull(this.ladderForm.step4_hours),
+-            step5_hours: numOrNull(this.ladderForm.step5_hours),
+-          },
+-        });
+-        useAlert(
+-          this.ladderForm.enabled && !this.ladderForm.dry_run
+-            ? 'Ladder saved. It is now sending reminders for real.'
+-            : 'Ladder settings saved.'
+-        );
+-        await this.loadLadder();
+-      } catch (err) {
+-        useAlert('Failed to save ladder settings: ' + (err.message || String(err)));
+-      } finally {
+-        this.savingLadder = false;
+-      }
+-    },
+     inFlightLabel(state) {
+       const partnerLower = this.t('partner', 'lower');
+       return (
+         {
+-          climbing: 'climbing',
++          climbing: 'Climbing',
+           dealer_replied: `${partnerLower} replied — halted`,
+           acknowledged_by_agent: 'marked acknowledged — halted',
+           resolved: 'case resolved — halted',
+@@ -270,748 +203,96 @@ export default {
+         }[state] || state
+       );
+     },
+-    // ── PIC (department -> contact) ─────────────────────────────────────
+-    async createPic() {
+-      if (
+-        !this.picForm.department ||
+-        !this.picForm.pic_name ||
+-        !this.picForm.pic_email
+-      ) {
+-        useAlert('Department, PIC name and PIC email are required.');
+-        return;
+-      }
+-      this.savingPic = true;
+-      try {
+-        await upsertPic(this.picForm.department, {
+-          pic_name: this.picForm.pic_name,
+-          pic_email: this.picForm.pic_email,
+-          pic_whatsapp: this.picForm.pic_whatsapp,
+-          cc_emails: splitEmails(this.picForm.cc_emails),
+-          escalation_manager_email: this.picForm.escalation_manager_email,
+-        });
+-        useAlert('PIC saved.');
+-        this.picForm = { ...EMPTY_PIC_FORM };
+-        await this.load();
+-      } catch (err) {
+-        useAlert('Failed to save PIC: ' + (err.message || String(err)));
+-      } finally {
+-        this.savingPic = false;
+-      }
+-    },
+-    startEditPic(pic) {
+-      this.editingPicDepartment = pic.department;
+-      this.editPicForm = {
+-        department: pic.department,
+-        pic_name: pic.pic_name || '',
+-        pic_email: pic.pic_email || '',
+-        pic_whatsapp: pic.pic_whatsapp || '',
+-        cc_emails: Array.isArray(pic.cc_emails) ? pic.cc_emails.join(', ') : '',
+-        escalation_manager_email: pic.escalation_manager_email || '',
+-      };
+-    },
+-    cancelEditPic() {
+-      this.editingPicDepartment = null;
+-      this.editPicForm = { ...EMPTY_PIC_FORM };
+-    },
+-    async saveEditPic() {
+-      this.savingPic = true;
+-      try {
+-        await upsertPic(this.editingPicDepartment, {
+-          pic_name: this.editPicForm.pic_name,
+-          pic_email: this.editPicForm.pic_email,
+-          pic_whatsapp: this.editPicForm.pic_whatsapp,
+-          cc_emails: splitEmails(this.editPicForm.cc_emails),
+-          escalation_manager_email: this.editPicForm.escalation_manager_email,
+-        });
+-        useAlert('PIC updated.');
+-        this.cancelEditPic();
+-        await this.load();
+-      } catch (err) {
+-        useAlert('Failed to update PIC: ' + (err.message || String(err)));
+-      } finally {
+-        this.savingPic = false;
+-      }
+-    },
+-    async removePic(department) {
+-      // eslint-disable-next-line no-alert
+-      if (
+-        !window.confirm(
+-          `Delete the PIC for "${department}"? This cannot be undone.`
+-        )
+-      ) {
+-        return;
+-      }
+-      this.savingPic = true;
+-      try {
+-        await deletePic(department);
+-        useAlert('PIC deleted.');
+-        if (this.editingPicDepartment === department) this.cancelEditPic();
+-        await this.load();
+-      } catch (err) {
+-        useAlert('Failed to delete PIC: ' + (err.message || String(err)));
+-      } finally {
+-        this.savingPic = false;
+-      }
+-    },
+-    // ── Dealer (dealer -> email) ─────────────────────────────────────────
+-    async createDealer() {
+-      const emails = splitEmails(this.dealerForm.emails);
+-      const contacts = contactsFrom(this.dealerForm);
+-      // A dealer configured purely by role is valid -- that is the shape the
+-      // ladder wants -- so either half satisfies "name somebody".
+-      if (!this.dealerForm.dealer || (!emails.length && !Object.keys(contacts).length)) {
+-        useAlert(
+-          `${this.t('partner')} and at least one member email or named contact are required.`
+-        );
+-        return;
+-      }
+-      this.savingDealer = true;
+-      try {
+-        await upsertDealer(this.dealerForm.dealer, {
+-          emails,
+-          contacts,
+-          region: this.dealerForm.region,
+-        });
+-        useAlert(`${this.t('partner')} saved.`);
+-        this.dealerForm = { ...EMPTY_DEALER_FORM };
+-        await this.load();
+-      } catch (err) {
+-        useAlert(
+-          `Failed to save ${this.t('partner', 'lower')}: ` +
+-            (err.message || String(err))
+-        );
+-      } finally {
+-        this.savingDealer = false;
+-      }
+-    },
+-    startEditDealer(dealer) {
+-      this.editingDealerName = dealer.dealer;
+-      const contacts = dealer.contacts || {};
+-      this.editDealerForm = {
+-        ...EMPTY_DEALER_FORM,
+-        dealer: dealer.dealer,
+-        emails: Array.isArray(dealer.emails)
+-          ? dealer.emails.join(', ')
+-          : dealer.email || '',
+-        region: dealer.region || '',
+-        cre: contacts.cre || '',
+-        sales_aftersales_mgr: contacts.sales_aftersales_mgr || '',
+-        principal: contacts.principal || '',
+-        owner: contacts.owner || '',
+-      };
+-    },
+-    cancelEditDealer() {
+-      this.editingDealerName = null;
+-      this.editDealerForm = { ...EMPTY_DEALER_FORM };
+-    },
+-    async saveEditDealer() {
+-      const emails = splitEmails(this.editDealerForm.emails);
+-      const contacts = contactsFrom(this.editDealerForm);
+-      if (!emails.length && !Object.keys(contacts).length) {
+-        useAlert('At least one member email or named contact is required.');
+-        return;
+-      }
+-      this.savingDealer = true;
+-      try {
+-        await upsertDealer(this.editingDealerName, {
+-          emails,
+-          contacts,
+-          region: this.editDealerForm.region,
+-        });
+-        useAlert(`${this.t('partner')} updated.`);
+-        this.cancelEditDealer();
+-        await this.load();
+-      } catch (err) {
+-        useAlert(
+-          `Failed to update ${this.t('partner', 'lower')}: ` +
+-            (err.message || String(err))
+-        );
+-      } finally {
+-        this.savingDealer = false;
+-      }
+-    },
+-    async removeDealer(dealer) {
+-      // eslint-disable-next-line no-alert
+-      if (
+-        !window.confirm(
+-          `Delete ${this.t('partner', 'lower')} "${dealer}"? This cannot be undone.`
+-        )
+-      ) {
+-        return;
+-      }
+-      this.savingDealer = true;
+-      try {
+-        await deleteDealer(dealer);
+-        useAlert(`${this.t('partner')} deleted.`);
+-        if (this.editingDealerName === dealer) this.cancelEditDealer();
+-        await this.load();
+-      } catch (err) {
+-        useAlert(
+-          `Failed to delete ${this.t('partner', 'lower')}: ` +
+-            (err.message || String(err))
+-        );
+-      } finally {
+-        this.savingDealer = false;
+-      }
+-    },
+   },
+ };
+ </script>
+ 
+ <template>
+-  <div class="w-full h-full p-6 overflow-y-auto">
+-    <h1 class="mb-1 text-lg font-medium text-n-slate-12">
+-      Escalation Routing
+-    </h1>
+-    <p class="mb-6 text-sm text-n-slate-11">
+-      Configure which person-in-charge (PIC) is notified for each
+-      department, and which email address represents each
+-      {{ t('partner', 'lower') }}, for SLA and escalation notifications.
+-    </p>
+-
+-    <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">
+-      Loading…
+-    </div>
+-    <div v-else-if="errored" class="py-10 text-sm text-center text-n-slate-11">
+-      Could not load escalation routing.
+-    </div>
+-
+-    <template v-else>
+-      <!-- Escalation ladder -->
+-      <h2 class="mb-1 text-base font-medium text-n-slate-12">
+-        Escalation ladder
+-      </h2>
+-      <p class="mb-4 text-sm text-n-slate-11">
+-        How long an escalated case may go unanswered before each reminder.
+-        Timers are in <strong>working hours</strong> from the moment the case
+-        was escalated. Leave a box empty to use the deployment's value.
+-      </p>
+-
+-      <div class="max-w-3xl p-4 mb-6 border rounded-lg border-n-weak">
+-        <div class="flex flex-wrap gap-6 mb-4">
+-          <label class="flex items-center gap-2 text-sm text-n-slate-12">
+-            <input v-model="ladderForm.enabled" type="checkbox" />
+-            Enabled
+-          </label>
+-          <label class="flex items-center gap-2 text-sm text-n-slate-12">
+-            <input v-model="ladderForm.dry_run" type="checkbox" />
+-            Dry run — log what it would send, send nothing
+-          </label>
+-          <label class="flex items-center gap-2 text-sm text-n-slate-11">
+-            Check every
+-            <input
+-              v-model="ladderForm.scan_interval_seconds"
+-              type="number"
+-              min="30"
+-              placeholder="300"
+-              class="w-24 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-            />
+-            seconds
+-          </label>
+-        </div>
+-
+-        <p
+-          v-if="ladderForm.enabled && !ladderForm.dry_run"
+-          class="p-2 mb-4 text-xs rounded text-n-slate-12 bg-n-amber-3"
+-        >
+-          Reminders will be emailed to real {{ t('partner', 'lower') }}
+-          contacts. Run with dry run on first and read the log for a full
+-          working week before switching it off.
++  <div class="w-full h-full px-6 py-6 overflow-y-auto md:px-10">
++    <div class="flex flex-col w-full gap-6 mx-auto max-w-[1200px]">
++      <header class="flex flex-col gap-1.5">
++        <h1 class="text-xl font-semibold text-n-slate-12">Escalation Routing</h1>
++        <p class="max-w-3xl text-sm leading-relaxed text-n-slate-11">
++          Who is emailed when an agent escalates a case: a department's PIC, a
++          {{ t('partner', 'lower') }}'s contacts, and the reminders that follow if nobody answers.
+         </p>
++      </header>
+ 
+-        <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+-          <div v-for="rung in ladderRungs" :key="rung.key">
+-            <label class="block mb-1 text-sm text-n-slate-11">
+-              {{ rung.label }}
+-            </label>
+-            <div class="flex items-center gap-2">
+-              <input
+-                v-model="ladderForm[rung.key]"
+-                type="number"
+-                min="0"
+-                step="0.5"
+-                class="w-24 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-              />
+-              <span class="text-xs text-n-slate-11">working hours</span>
+-            </div>
+-            <p class="mt-1 text-xs text-n-slate-10">{{ rung.hint }}</p>
+-          </div>
+-        </div>
+-
+-        <div class="mt-3">
+-          <p class="text-sm text-n-slate-11">Step 6 — 48 h unresolved</p>
+-          <p class="mt-1 text-xs text-n-slate-10">Emails the Dealer Owner when a case is still open 48 working hours after escalation, even if the dealer replied. Fixed; not editable here.</p>
+-        </div>
++      <div v-if="loading" class="py-10 text-sm text-center text-n-slate-11">Loading…</div>
++      <div v-else-if="errored" class="py-10 text-sm text-center text-n-slate-11">
++        Could not load escalation routing.
++      </div>
+ 
+-        <div class="flex items-center gap-4 mt-4">
++      <template v-else>
++        <div role="tablist" aria-label="Escalation Routing sections" class="flex flex-wrap gap-1 border-b border-n-weak">
+           <button
++            v-for="(item, index) in tabs"
++            :id="`er-tab-${item.id}`"
++            :key="item.id"
++            :ref="`tab-${item.id}`"
+             type="button"
+-            :disabled="savingLadder"
+-            class="px-4 py-2 text-sm font-medium rounded-lg w-fit bg-n-brand text-white hover:opacity-90 disabled:opacity-50"
+-            @click="saveLadder"
++            role="tab"
++            :aria-selected="tab === item.id"
++            :aria-controls="`er-panel-${item.id}`"
++            :tabindex="tab === item.id ? 0 : -1"
++            class="px-3.5 py-2.5 -mb-px text-sm border-b-2"
++            :class="tab === item.id ? 'font-medium text-n-slate-12 border-n-brand' : 'text-n-slate-11 border-transparent hover:text-n-slate-12'"
++            @click="selectTab(item.id)"
++            @keydown="onTabKey($event, index)"
+           >
+-            Save ladder settings
+-          </button>
+-          <span v-if="ladderEffective" class="text-xs text-n-slate-11">
+-            In force now:
+-            {{ ladderEffective.enabled ? 'enabled' : 'disabled' }},
+-            {{ ladderEffective.dry_run ? 'dry run' : 'sending for real' }},
+-            every {{ ladderEffective.scan_interval_seconds }}s
+-            <template v-if="!ladderEffective.from_store">
+-              (from the deployment — nothing set here yet)
+-            </template>
+-          </span>
+-        </div>
+-      </div>
+-
+-      <h3 class="mb-2 text-sm font-medium text-n-slate-12">
+-        In flight ({{ inFlight.length }})
+-      </h3>
+-      <p v-if="inFlightError" class="mb-4 text-sm text-n-slate-11">
+-        {{ inFlightError }}
+-      </p>
+-      <p v-else-if="loadingInFlight" class="mb-4 text-sm text-n-slate-11">
+-        Loading…
+-      </p>
+-      <p v-else-if="!inFlight.length" class="mb-6 text-sm text-n-slate-11">
+-        No escalated cases right now.
+-      </p>
+-      <div v-else class="mb-8 overflow-x-auto border rounded-lg border-n-weak">
+-        <table class="w-full text-sm border-collapse text-n-slate-11">
+-          <thead>
+-            <tr class="text-left border-b border-n-weak text-n-slate-12">
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">Case</th>
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">
+-                {{ t('partner') }}
+-              </th>
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">Rung</th>
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">Next step</th>
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">Due in</th>
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">State</th>
+-            </tr>
+-          </thead>
+-          <tbody>
+-            <tr
+-              v-for="row in inFlight"
+-              :key="row.conv_id"
+-              class="border-b border-n-weak last:border-b-0"
++            {{ item.label }}
++            <span
++              v-if="item.count !== undefined"
++              class="ml-1.5 px-1.5 py-px text-xs rounded-full"
++              :class="tab === item.id ? 'bg-n-blue-3 text-n-blue-11' : 'bg-n-alpha-2 text-n-slate-11'"
+             >
+-              <td class="px-3 py-2 whitespace-nowrap text-n-slate-12">
+-                #{{ row.conv_id }}
+-              </td>
+-              <td class="px-3 py-2 whitespace-nowrap">{{ row.dealer || '—' }}</td>
+-              <td class="px-3 py-2 whitespace-nowrap">{{ row.rung ?? '—' }}</td>
+-              <td class="px-3 py-2 whitespace-nowrap">
+-                {{ row.next_step_no ?? '—' }}
+-              </td>
+-              <td class="px-3 py-2 whitespace-nowrap">
+-                <template v-if="row.next_due_in_working_hours === null">—</template>
+-                <template v-else-if="row.next_due_in_working_hours === 0">due now</template>
+-                <template v-else>{{ row.next_due_in_working_hours }}h</template>
+-              </td>
+-              <td
+-                class="px-3 py-2 whitespace-nowrap"
+-                :class="row.state === 'climbing' ? 'text-n-slate-12' : 'text-n-slate-10'"
+-              >
+-                {{ inFlightLabel(row.state) }}
+-              </td>
+-            </tr>
+-          </tbody>
+-        </table>
+-      </div>
+-
+-      <!-- PIC section -->
+-      <h2 class="mb-3 text-base font-medium text-n-slate-12">
+-        Department PICs
+-      </h2>
+-      <form
+-        class="grid max-w-3xl grid-cols-1 gap-4 mb-6 md:grid-cols-2"
+-        @submit.prevent="createPic"
+-      >
+-        <div>
+-          <label class="block mb-1 text-sm text-n-slate-11">Department *</label>
+-          <input
+-            v-model="picForm.department"
+-            type="text"
+-            required
+-            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-          />
+-        </div>
+-        <div>
+-          <label class="block mb-1 text-sm text-n-slate-11">PIC name *</label>
+-          <input
+-            v-model="picForm.pic_name"
+-            type="text"
+-            required
+-            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-          />
+-        </div>
+-        <div>
+-          <label class="block mb-1 text-sm text-n-slate-11">PIC email *</label>
+-          <input
+-            v-model="picForm.pic_email"
+-            type="email"
+-            required
+-            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-          />
+-        </div>
+-        <div>
+-          <label class="block mb-1 text-sm text-n-slate-11">PIC WhatsApp</label>
+-          <input
+-            v-model="picForm.pic_whatsapp"
+-            type="text"
+-            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-          />
+-        </div>
+-        <div>
+-          <label class="block mb-1 text-sm text-n-slate-11">
+-            Tier-2 manager email
+-          </label>
+-          <input
+-            v-model="picForm.escalation_manager_email"
+-            type="text"
+-            placeholder="manager@example.com"
+-            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-          />
+-          <p class="mt-1 text-xs text-n-slate-10">
+-            Alerted when an escalation goes unanswered past the tier-2 window.
+-            Leave blank to re-alert the PIC instead.
+-          </p>
+-        </div>
+-        <div class="md:col-span-2">
+-          <label class="block mb-1 text-sm text-n-slate-11">
+-            CC emails (comma-separated)
+-          </label>
+-          <input
+-            v-model="picForm.cc_emails"
+-            type="text"
+-            placeholder="ops@example.com, manager@example.com"
+-            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-          />
+-        </div>
+-        <div class="md:col-span-2">
+-          <button
+-            type="submit"
+-            :disabled="savingPic"
+-            class="px-4 py-2 text-sm font-medium rounded-lg w-fit bg-n-brand text-white hover:opacity-90 disabled:opacity-50"
+-          >
+-            Add PIC
++              {{ item.count }}
++            </span>
+           </button>
+         </div>
+-      </form>
+ 
+-      <p v-if="!pics.length" class="mb-10 text-sm text-n-slate-11">
+-        No department PICs configured yet.
+-      </p>
+-      <div v-else class="mb-10 overflow-x-auto border rounded-lg border-n-weak">
+-        <table class="w-full text-sm border-collapse text-n-slate-11">
+-          <thead>
+-            <tr class="text-left border-b border-n-weak text-n-slate-12">
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">Department</th>
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">PIC name</th>
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">PIC email</th>
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">
+-                PIC WhatsApp
+-              </th>
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">Members (CC)</th>
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">
+-                Tier-2 manager
+-              </th>
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">Actions</th>
+-            </tr>
+-          </thead>
+-          <tbody>
+-            <tr
+-              v-for="pic in pics"
+-              :key="pic.department"
+-              class="border-b border-n-weak last:border-b-0"
+-            >
+-              <template v-if="editingPicDepartment === pic.department">
+-                <td class="px-3 py-2 whitespace-nowrap text-n-slate-12">
+-                  {{ pic.department }}
+-                </td>
+-                <td class="px-2 py-1">
+-                  <input
+-                    v-model="editPicForm.pic_name"
+-                    type="text"
+-                    class="w-32 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-                  />
+-                </td>
+-                <td class="px-2 py-1">
+-                  <input
+-                    v-model="editPicForm.pic_email"
+-                    type="email"
+-                    class="w-40 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-                  />
+-                </td>
+-                <td class="px-2 py-1">
+-                  <input
+-                    v-model="editPicForm.pic_whatsapp"
+-                    type="text"
+-                    class="w-32 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-                  />
+-                </td>
+-                <td class="px-2 py-1">
+-                  <input
+-                    v-model="editPicForm.cc_emails"
+-                    type="text"
+-                    class="w-48 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-                  />
+-                </td>
+-                <td class="px-2 py-1">
+-                  <input
+-                    v-model="editPicForm.escalation_manager_email"
+-                    type="text"
+-                    class="w-48 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-                  />
+-                </td>
+-                <td class="px-3 py-2 whitespace-nowrap">
+-                  <button
+-                    type="button"
+-                    :disabled="savingPic"
+-                    class="mr-2 font-medium text-n-brand hover:underline disabled:opacity-50"
+-                    @click="saveEditPic"
+-                  >
+-                    Save
+-                  </button>
+-                  <button
+-                    type="button"
+-                    class="text-n-slate-11 hover:underline"
+-                    @click="cancelEditPic"
+-                  >
+-                    Cancel
+-                  </button>
+-                </td>
+-              </template>
+-              <template v-else>
+-                <td class="px-3 py-2 whitespace-nowrap">{{ pic.department }}</td>
+-                <td class="px-3 py-2 whitespace-nowrap">{{ pic.pic_name }}</td>
+-                <td class="px-3 py-2 whitespace-nowrap">{{ pic.pic_email }}</td>
+-                <td class="px-3 py-2 whitespace-nowrap">
+-                  {{ pic.pic_whatsapp }}
+-                </td>
+-                <td class="px-3 py-2 whitespace-nowrap">
+-                  {{ Array.isArray(pic.cc_emails) ? pic.cc_emails.join(', ') : '' }}
+-                </td>
+-                <td class="px-3 py-2 whitespace-nowrap">
+-                  <span v-if="pic.escalation_manager_email">
+-                    {{ pic.escalation_manager_email }}
+-                  </span>
+-                  <span v-else class="text-n-slate-10">PIC (fallback)</span>
+-                </td>
+-                <td class="px-3 py-2 whitespace-nowrap">
+-                  <button
+-                    type="button"
+-                    class="mr-2 font-medium text-n-brand hover:underline"
+-                    @click="startEditPic(pic)"
+-                  >
+-                    Edit
+-                  </button>
+-                  <button
+-                    type="button"
+-                    :disabled="savingPic"
+-                    class="text-n-ruby-11 hover:underline disabled:opacity-50"
+-                    @click="removePic(pic.department)"
+-                  >
+-                    Delete
+-                  </button>
+-                </td>
+-              </template>
+-            </tr>
+-          </tbody>
+-        </table>
+-      </div>
+-
+-      <!-- Dealer section -->
+-      <h2 class="mb-3 text-base font-medium text-n-slate-12">
+-        {{ t('partner') }} groups
+-      </h2>
+-      <form
+-        class="grid max-w-2xl grid-cols-1 gap-4 mb-6 md:grid-cols-2"
+-        @submit.prevent="createDealer"
+-      >
+-        <div>
+-          <label class="block mb-1 text-sm text-n-slate-11">Group name *</label>
+-          <input
+-            v-model="dealerForm.dealer"
+-            type="text"
+-            required
+-            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        <div :id="`er-panel-${tab}`" role="tabpanel" :aria-labelledby="`er-tab-${tab}`">
++          <OverviewTab
++            v-if="tab === 'overview'"
++            :pics="pics"
++            :dealers="dealers"
++            :effective="ladderEffective"
++            :in-flight="inFlight"
++            :in-flight-error="inFlightError"
++            :loading-in-flight="loadingInFlight"
++            :labels="labels"
++            :state-label="inFlightLabel"
++            @open-record="openFromOverview"
++            @open-tab="selectTab"
+           />
+-        </div>
+-        <div>
+-          <label class="block mb-1 text-sm text-n-slate-11">Members *</label>
+-          <input
+-            v-model="dealerForm.emails"
+-            type="text"
+-            required
+-            placeholder="ops@example.com, manager@example.com"
+-            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          <DepartmentsTab
++            v-else-if="tab === 'departments'"
++            :pics="pics"
++            :can-add="!dealerScoped"
++            :open-id="openRecord.kind === 'pic' ? openRecord.id : ''"
++            @opened="clearOpenRecord"
++            @saved="refresh"
+           />
+-          <p class="mt-1 text-xs text-n-slate-11">
+-            Comma-separated. Every member receives the escalation email.
+-          </p>
+-        </div>
+-        <div>
+-          <label class="block mb-1 text-sm text-n-slate-11">PRO-NET region</label>
+-          <input
+-            v-model="dealerForm.region"
+-            type="text"
+-            placeholder="central"
+-            class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++          <DealersTab
++            v-else-if="tab === 'dealers'"
++            :dealers="dealers"
++            :roles="dealerRoles"
++            :labels="labels"
++            :can-add="!dealerScoped && !departmentScoped"
++            :open-id="openRecord.kind === 'dealer' ? openRecord.id : ''"
++            @opened="clearOpenRecord"
++            @saved="refresh"
++          />
++          <LadderTab
++            v-else
++            :form="ladderForm"
++            :effective="ladderEffective"
++            :dealers="dealers"
++            :labels="labels"
++            @saved="loadLadder"
+           />
+-          <p class="mt-1 text-xs text-n-slate-11">
+-            Decides which Area/Regional Manager and HOD are CC'd.
+-          </p>
+-        </div>
+-        <div class="md:col-span-2">
+-          <p class="mb-2 text-sm font-medium text-n-slate-12">
+-            Escalation ladder contacts
+-          </p>
+-          <p class="mb-3 text-xs text-n-slate-11">
+-            Each reminder addresses a more senior person than the last. A role
+-            left blank means that rung is skipped — it is never re-addressed to
+-            somebody else.
+-          </p>
+-          <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+-            <div v-for="role in dealerRoles" :key="role.key">
+-              <label class="block mb-1 text-sm text-n-slate-11">
+-                {{ role.label }}
+-                <span class="text-xs text-n-slate-10">({{ role.rung }})</span>
+-              </label>
+-              <input
+-                v-model="dealerForm[role.key]"
+-                type="email"
+-                class="w-full px-3 py-2 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-              />
+-            </div>
+-          </div>
+-        </div>
+-        <div class="md:col-span-2">
+-          <button
+-            type="submit"
+-            :disabled="savingDealer"
+-            class="px-4 py-2 text-sm font-medium rounded-lg w-fit bg-n-brand text-white hover:opacity-90 disabled:opacity-50"
+-          >
+-            Add {{ t('partner', 'lower') }}
+-          </button>
+         </div>
+-      </form>
+-
+-      <p v-if="!dealers.length" class="text-sm text-n-slate-11">
+-        No {{ t('partner', 'plural_lower') }} configured yet.
+-      </p>
+-      <div v-else class="overflow-x-auto border rounded-lg border-n-weak">
+-        <table class="w-full text-sm border-collapse text-n-slate-11">
+-          <thead>
+-            <tr class="text-left border-b border-n-weak text-n-slate-12">
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">Group name</th>
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">Members</th>
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">Ladder contacts</th>
+-              <th class="px-3 py-2 font-medium whitespace-nowrap">Actions</th>
+-            </tr>
+-          </thead>
+-          <tbody>
+-            <tr
+-              v-for="dealer in dealers"
+-              :key="dealer.dealer"
+-              class="border-b border-n-weak last:border-b-0"
+-            >
+-              <template v-if="editingDealerName === dealer.dealer">
+-                <td class="px-3 py-2 whitespace-nowrap text-n-slate-12">
+-                  {{ dealer.dealer }}
+-                </td>
+-                <td class="px-2 py-1">
+-                  <input
+-                    v-model="editDealerForm.emails"
+-                    type="text"
+-                    class="w-48 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-                  />
+-                </td>
+-                <td class="px-2 py-1">
+-                  <div class="flex flex-col gap-1">
+-                    <label
+-                      v-for="role in dealerRoles"
+-                      :key="role.key"
+-                      class="flex items-center gap-2 text-xs text-n-slate-11"
+-                    >
+-                      <span class="w-32 shrink-0">{{ role.label }}</span>
+-                      <input
+-                        v-model="editDealerForm[role.key]"
+-                        type="email"
+-                        class="w-48 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-                      />
+-                    </label>
+-                    <label class="flex items-center gap-2 text-xs text-n-slate-11">
+-                      <span class="w-32 shrink-0">PRO-NET region</span>
+-                      <input
+-                        v-model="editDealerForm.region"
+-                        type="text"
+-                        class="w-48 px-2 py-1 text-sm border rounded border-n-weak bg-n-alpha-black2 text-n-slate-12"
+-                      />
+-                    </label>
+-                  </div>
+-                </td>
+-                <td class="px-3 py-2 whitespace-nowrap">
+-                  <button
+-                    type="button"
+-                    :disabled="savingDealer"
+-                    class="mr-2 font-medium text-n-brand hover:underline disabled:opacity-50"
+-                    @click="saveEditDealer"
+-                  >
+-                    Save
+-                  </button>
+-                  <button
+-                    type="button"
+-                    class="text-n-slate-11 hover:underline"
+-                    @click="cancelEditDealer"
+-                  >
+-                    Cancel
+-                  </button>
+-                </td>
+-              </template>
+-              <template v-else>
+-                <td class="px-3 py-2 whitespace-nowrap">{{ dealer.dealer }}</td>
+-                <td class="px-3 py-2 whitespace-nowrap">{{ Array.isArray(dealer.emails) ? dealer.emails.join(', ') : dealer.email }}</td>
+-                <td class="px-3 py-2">
+-                  <span
+-                    v-if="!dealer.contacts || !Object.keys(dealer.contacts).length"
+-                    class="text-xs text-n-slate-10"
+-                  >
+-                    None — reminders will be skipped
+-                  </span>
+-                  <div v-else class="flex flex-col gap-0.5 text-xs">
+-                    <span
+-                      v-for="role in dealerRoles"
+-                      :key="role.key"
+-                      :class="dealer.contacts[role.key] ? 'text-n-slate-12' : 'text-n-slate-10'"
+-                    >
+-                      {{ role.label }}: {{ dealer.contacts[role.key] || '—' }}
+-                    </span>
+-                  </div>
+-                </td>
+-                <td class="px-3 py-2 whitespace-nowrap">
+-                  <button
+-                    type="button"
+-                    class="mr-2 font-medium text-n-brand hover:underline"
+-                    @click="startEditDealer(dealer)"
+-                  >
+-                    Edit
+-                  </button>
+-                  <button
+-                    type="button"
+-                    :disabled="savingDealer"
+-                    class="text-n-ruby-11 hover:underline disabled:opacity-50"
+-                    @click="removeDealer(dealer.dealer)"
+-                  >
+-                    Delete
+-                  </button>
+-                </td>
+-              </template>
+-            </tr>
+-          </tbody>
+-        </table>
+-      </div>
+-    </template>
++      </template>
++    </div>
+   </div>
+ </template>
+diff --git a/app/javascript/dashboard/views/escalationRouting/DealerDrawer.vue b/app/javascript/dashboard/views/escalationRouting/DealerDrawer.vue
+new file mode 100644
+index 0000000..44948d5
+--- /dev/null
++++ b/app/javascript/dashboard/views/escalationRouting/DealerDrawer.vue
+@@ -0,0 +1,161 @@
++<script setup>
++// Add / edit one dealer group (patch 0101): Basics, Members (chips), Ladder
++// contacts. Works on a copy; same upsertDealer / deleteDealer calls and body
++// ({ emails, contacts, region }) as the pre-0101 page. A dealer configured by
++// named contacts alone is valid -- that is the shape the ladder wants.
++import { computed, ref, watch } from 'vue';
++import { useAlert } from 'dashboard/composables';
++import { upsertDealer, deleteDealer } from 'dashboard/api/protonAdmin';
++import RecordDrawer from './RecordDrawer.vue';
++import EmailChips from './EmailChips.vue';
++import { contactsFrom, dealerMembers, isEmail } from './routingHelpers';
++
++const props = defineProps({
++  open: { type: Boolean, default: false },
++  dealer: { type: Object, default: null }, // null = a new dealer
++  roles: { type: Array, required: true }, // DEALER_ROLES with term labels
++  labels: { type: Object, default: () => ({}) },
++});
++const emit = defineEmits(['close', 'saved']);
++
++const blank = () => ({ dealer: '', region: '', emails: [], cre: '', sales_aftersales_mgr: '', principal: '', owner: '' });
++const form = ref(blank());
++const membersInvalid = ref(false);
++const saving = ref(false);
++const isNew = computed(() => !props.dealer);
++const partner = computed(() => props.labels.partnerTitle || 'Dealer');
++const partnerLower = computed(() => props.labels.partnerLower || 'dealer');
++
++watch(
++  () => [props.open, props.dealer],
++  () => {
++    if (!props.open) return;
++    const d = props.dealer;
++    const c = d?.contacts || {};
++    form.value = d
++      ? {
++          dealer: d.dealer,
++          region: d.region || '',
++          emails: [...dealerMembers(d)],
++          cre: c.cre || '',
++          sales_aftersales_mgr: c.sales_aftersales_mgr || '',
++          principal: c.principal || '',
++          owner: c.owner || '',
++        }
++      : blank();
++  },
++  { immediate: true }
++);
++
++const badContacts = computed(() =>
++  props.roles.filter(r => form.value[r.key].trim() && !isEmail(form.value[r.key])).map(r => r.key)
++);
++const somebody = computed(
++  () => form.value.emails.length > 0 || Object.keys(contactsFrom(form.value)).length > 0
++);
++const canSave = computed(
++  () => Boolean(form.value.dealer.trim()) && somebody.value && !membersInvalid.value && !badContacts.value.length
++);
++
++async function save() {
++  if (!canSave.value) {
++    useAlert(`${partner.value} name and at least one valid member email or named contact are required.`);
++    return;
++  }
++  saving.value = true;
++  try {
++    await upsertDealer(isNew.value ? form.value.dealer.trim() : props.dealer.dealer, {
++      emails: form.value.emails.map(e => e.trim()),
++      contacts: contactsFrom(form.value),
++      region: form.value.region,
++    });
++    useAlert(isNew.value ? `${partner.value} saved.` : `${partner.value} updated.`);
++    emit('saved');
++  } catch (err) {
++    useAlert(`Failed to save ${partnerLower.value}: ` + (err.message || String(err)));
++  } finally {
++    saving.value = false;
++  }
++}
++
++async function remove() {
++  const name = props.dealer?.dealer;
++  if (!name) return;
++  // eslint-disable-next-line no-alert
++  if (!window.confirm(`Delete ${partnerLower.value} "${name}"? This cannot be undone.`)) return;
++  saving.value = true;
++  try {
++    await deleteDealer(name);
++    useAlert(`${partner.value} deleted.`);
++    emit('saved');
++  } catch (err) {
++    useAlert(`Failed to delete ${partnerLower.value}: ` + (err.message || String(err)));
++  } finally {
++    saving.value = false;
++  }
++}
++
++const input =
++  'w-full h-10 px-3 !mb-0 text-sm border rounded-lg bg-n-alpha-black2 text-n-slate-12 min-w-0';
++</script>
++
++<template>
++  <RecordDrawer
++    :open="open"
++    :eyebrow="isNew ? `Add ${partnerLower}` : `Edit ${partnerLower}`"
++    :title="isNew ? `New ${partnerLower}` : dealer.dealer"
++    :saving="saving"
++    :can-save="canSave"
++    :deletable="!isNew"
++    :delete-label="`Delete ${partnerLower}`"
++    @save="save"
++    @cancel="emit('close')"
++    @delete="remove"
++  >
++    <fieldset class="flex flex-col gap-4">
++      <legend class="mb-3 text-sm font-semibold text-n-slate-12">Basics</legend>
++      <label v-if="isNew" class="flex flex-col gap-1.5">
++        <span class="text-sm font-medium text-n-slate-12">Group name</span>
++        <input v-model="form.dealer" type="text" required placeholder="petaling_jaya" :class="[input, 'border-n-weak']" />
++        <span class="text-xs text-n-slate-11">Matches the dealer_… label agents put on a case.</span>
++      </label>
++      <label class="flex flex-col gap-1.5">
++        <span class="text-sm font-medium text-n-slate-12">PRO-NET region</span>
++        <input v-model="form.region" type="text" placeholder="central" :class="[input, 'border-n-weak']" />
++        <span class="text-xs text-n-slate-11">Decides which Area/Regional Manager and HOD are CC'd.</span>
++      </label>
++    </fieldset>
++
++    <fieldset class="flex flex-col gap-2">
++      <legend class="mb-3 text-sm font-semibold text-n-slate-12">
++        Members <span class="font-normal text-n-slate-11">— all get the escalation email</span>
++      </legend>
++      <EmailChips v-model="form.emails" label="Add a member email" @invalid="membersInvalid = $event" />
++    </fieldset>
++
++    <fieldset class="flex flex-col gap-3">
++      <legend class="mb-1.5 text-sm font-semibold text-n-slate-12">Ladder contacts</legend>
++      <p class="text-xs leading-relaxed text-n-slate-11">
++        Each reminder goes to someone more senior. A blank role means that step is skipped, never sent to someone else.
++      </p>
++      <label
++        v-for="role in roles"
++        :key="role.key"
++        class="grid items-center gap-2.5 grid-cols-[150px_minmax(0,1fr)]"
++      >
++        <span class="flex flex-col">
++          <span class="text-sm font-medium text-n-slate-12">{{ role.label }}</span>
++          <span class="text-xs text-n-slate-11">{{ role.rung }}</span>
++        </span>
++        <input
++          v-model="form[role.key]"
++          type="email"
++          :class="[input, badContacts.includes(role.key) ? 'border-n-ruby-9' : 'border-n-weak']"
++        />
++      </label>
++      <p v-if="!somebody" class="text-xs text-n-ruby-11">
++        Add at least one member email or one named contact.
++      </p>
++    </fieldset>
++  </RecordDrawer>
++</template>
+diff --git a/app/javascript/dashboard/views/escalationRouting/DealersTab.vue b/app/javascript/dashboard/views/escalationRouting/DealersTab.vue
+new file mode 100644
+index 0000000..7cf5225
+--- /dev/null
++++ b/app/javascript/dashboard/views/escalationRouting/DealersTab.vue
+@@ -0,0 +1,163 @@
++<script setup>
++// Dealers tab (patch 0101): searchable list with each dealer's ladder coverage
++// as four role tags (filled = set, dashed = missing, so that step is skipped).
++// A dealer-scoped user (role with a dealer_slugs data scope) cannot create a
++// dealer -- the API would 403 -- so Add is hidden for them.
++import { computed, ref, watch } from 'vue';
++import DealerDrawer from './DealerDrawer.vue';
++import { dealerMembers, matches } from './routingHelpers';
++
++const props = defineProps({
++  dealers: { type: Array, default: () => [] },
++  roles: { type: Array, required: true },
++  labels: { type: Object, default: () => ({}) },
++  canAdd: { type: Boolean, default: true },
++  openId: { type: String, default: '' },
++});
++const emit = defineEmits(['saved', 'opened']);
++
++const query = ref('');
++const drawerOpen = ref(false);
++const editing = ref(null);
++
++const shown = computed(() =>
++  props.dealers.filter(d => matches(query.value, d.dealer, d.region, ...dealerMembers(d), ...Object.values(d.contacts || {})))
++);
++
++function hasLadder(d) {
++  return Boolean(d.contacts && Object.keys(d.contacts).length);
++}
++function membersText(d) {
++  const n = dealerMembers(d).length;
++  if (!n) return 'None';
++  return n === 1 ? '1 email' : `${n} emails`;
++}
++
++function openFor(dealer) {
++  editing.value = dealer;
++  drawerOpen.value = true;
++}
++
++watch(
++  () => [props.openId, props.dealers],
++  () => {
++    if (!props.openId) return;
++    const d = props.dealers.find(x => x.dealer === props.openId);
++    if (d) openFor(d);
++    emit('opened');
++  },
++  { immediate: true }
++);
++
++function onSaved() {
++  drawerOpen.value = false;
++  emit('saved');
++}
++</script>
++
++<template>
++  <div class="flex flex-col gap-5">
++    <div class="flex flex-wrap items-center justify-between gap-3">
++      <label class="flex items-center flex-1 h-10 gap-2 px-3 border rounded-lg min-w-[260px] max-w-md border-n-weak bg-n-alpha-black2">
++        <span class="i-lucide-search size-4 text-n-slate-11" aria-hidden="true" />
++        <span class="sr-only">Search {{ labels.partnerPluralLower || 'dealers' }}</span>
++        <input
++          v-model="query"
++          type="search"
++          :placeholder="`Search ${labels.partnerLower || 'dealer'}, region or email`"
++          class="flex-1 !mb-0 !p-0 !h-auto text-sm bg-transparent border-0 outline-none text-n-slate-12"
++        />
++      </label>
++      <button
++        v-if="canAdd"
++        type="button"
++        class="flex items-center h-10 gap-1.5 px-4 text-sm font-medium text-white rounded-lg bg-n-brand hover:opacity-90"
++        @click="openFor(null)"
++      >
++        <span class="i-lucide-plus size-4" aria-hidden="true" />
++        Add {{ labels.partnerLower || 'dealer' }}
++      </button>
++    </div>
++
++    <div class="flex flex-wrap items-center gap-3.5 text-xs text-n-slate-11">
++      <span>Ladder contacts:</span>
++      <span class="inline-flex items-center gap-1.5">
++        <span class="px-2 py-0.5 font-medium rounded-md bg-n-blue-3 text-n-blue-11">CRE</span> set
++      </span>
++      <span class="inline-flex items-center gap-1.5">
++        <span class="px-2 py-px border border-dashed rounded-md border-n-ruby-8 text-n-ruby-11">CRE</span>
++        missing — that step is skipped
++      </span>
++    </div>
++
++    <p v-if="!dealers.length" class="text-sm text-n-slate-11">
++      No {{ labels.partnerPluralLower || 'dealers' }} configured yet.
++    </p>
++    <p v-else-if="!shown.length" class="text-sm text-n-slate-11">Nothing matches "{{ query }}".</p>
++    <div v-else class="overflow-x-auto border rounded-xl border-n-weak">
++      <table class="w-full text-sm border-collapse">
++        <thead>
++          <tr class="text-xs text-left bg-n-alpha-black1 text-n-slate-11">
++            <th class="px-4 py-2.5 font-medium">{{ labels.partnerTitle || 'Dealer' }}</th>
++            <th class="px-4 py-2.5 font-medium">PRO-NET region</th>
++            <th class="px-4 py-2.5 font-medium">Members</th>
++            <th class="px-4 py-2.5 font-medium">Ladder contacts</th>
++            <th class="px-4 py-2.5"><span class="sr-only">Actions</span></th>
++          </tr>
++        </thead>
++        <tbody>
++          <tr
++            v-for="d in shown"
++            :key="d.dealer"
++            class="border-t cursor-pointer border-n-weak hover:bg-n-alpha-1"
++            :class="drawerOpen && editing && editing.dealer === d.dealer ? 'bg-n-blue-2' : ''"
++            @click="openFor(d)"
++          >
++            <td class="px-4 py-3.5">
++              <div class="font-medium text-n-slate-12">{{ d.dealer }}</div>
++              <div class="text-xs text-n-slate-11">dealer_{{ d.dealer }}</div>
++            </td>
++            <td class="px-4 py-3.5">
++              <span v-if="d.region" class="text-n-slate-12">{{ d.region }}</span>
++              <span v-else class="px-2 py-0.5 text-xs font-medium rounded-full bg-n-amber-3 text-n-amber-11">
++                No region — ARM/HOD not CC'd
++              </span>
++            </td>
++            <td class="px-4 py-3.5 text-n-slate-11">{{ membersText(d) }}</td>
++            <td class="px-4 py-3.5">
++              <span v-if="!hasLadder(d)" class="text-n-slate-11">Group only — no ladder</span>
++              <div v-else class="flex flex-wrap gap-1.5 text-xs font-medium">
++                <span
++                  v-for="role in roles"
++                  :key="role.key"
++                  :title="d.contacts[role.key] ? d.contacts[role.key] : `Missing: ${role.rung} is skipped`"
++                  :class="
++                    d.contacts[role.key]
++                      ? 'px-2 py-0.5 rounded-md bg-n-blue-3 text-n-blue-11'
++                      : 'px-2 py-px rounded-md border border-dashed border-n-ruby-8 text-n-ruby-11'
++                  "
++                >
++                  {{ role.short }}
++                </span>
++              </div>
++            </td>
++            <td class="px-4 py-3.5 text-right">
++              <button type="button" class="font-medium text-n-brand hover:underline" @click.stop="openFor(d)">
++                Edit
++              </button>
++            </td>
++          </tr>
++        </tbody>
++      </table>
++    </div>
++
++    <DealerDrawer
++      :open="drawerOpen"
++      :dealer="editing"
++      :roles="roles"
++      :labels="labels"
++      @close="drawerOpen = false"
++      @saved="onSaved"
++    />
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/views/escalationRouting/DepartmentsTab.vue b/app/javascript/dashboard/views/escalationRouting/DepartmentsTab.vue
+new file mode 100644
+index 0000000..234740f
+--- /dev/null
++++ b/app/javascript/dashboard/views/escalationRouting/DepartmentsTab.vue
+@@ -0,0 +1,130 @@
++<script setup>
++// Departments tab (patch 0101): a searchable, read-only list; Add and Edit open
++// PicDrawer. No inline editing -- that was the old page's 7-column table of
++// 32-px inputs.
++import { computed, ref, watch } from 'vue';
++import PicDrawer from './PicDrawer.vue';
++import { matches, splitEmails } from './routingHelpers';
++
++const props = defineProps({
++  pics: { type: Array, default: () => [] },
++  canAdd: { type: Boolean, default: true },
++  // a department to open straight away (the Overview's "Fix")
++  openId: { type: String, default: '' },
++});
++const emit = defineEmits(['saved', 'opened']);
++
++const query = ref('');
++const drawerOpen = ref(false);
++const editing = ref(null);
++
++const shown = computed(() =>
++  props.pics.filter(p =>
++    matches(query.value, p.department, p.pic_name, p.pic_email, p.escalation_manager_email, ...splitEmails(p.cc_emails))
++  )
++);
++
++function ccText(p) {
++  const n = splitEmails(p.cc_emails).length;
++  if (!n) return 'None';
++  return n === 1 ? '1 person' : `${n} people`;
++}
++
++function openFor(pic) {
++  editing.value = pic;
++  drawerOpen.value = true;
++}
++
++watch(
++  () => [props.openId, props.pics],
++  () => {
++    if (!props.openId) return;
++    const pic = props.pics.find(p => p.department === props.openId);
++    if (pic) openFor(pic);
++    emit('opened');
++  },
++  { immediate: true }
++);
++
++function onSaved() {
++  drawerOpen.value = false;
++  emit('saved');
++}
++</script>
++
++<template>
++  <div class="flex flex-col gap-5">
++    <div class="flex flex-wrap items-center justify-between gap-3">
++      <label class="flex items-center flex-1 h-10 gap-2 px-3 border rounded-lg min-w-[260px] max-w-md border-n-weak bg-n-alpha-black2">
++        <span class="i-lucide-search size-4 text-n-slate-11" aria-hidden="true" />
++        <span class="sr-only">Search departments</span>
++        <input
++          v-model="query"
++          type="search"
++          placeholder="Search department, PIC or email"
++          class="flex-1 !mb-0 !p-0 !h-auto text-sm bg-transparent border-0 outline-none text-n-slate-12"
++        />
++      </label>
++      <button
++        v-if="canAdd"
++        type="button"
++        class="flex items-center h-10 gap-1.5 px-4 text-sm font-medium text-white rounded-lg bg-n-brand hover:opacity-90"
++        @click="openFor(null)"
++      >
++        <span class="i-lucide-plus size-4" aria-hidden="true" />
++        Add department
++      </button>
++    </div>
++
++    <p v-if="!pics.length" class="text-sm text-n-slate-11">No department PICs configured yet.</p>
++    <p v-else-if="!shown.length" class="text-sm text-n-slate-11">No department matches "{{ query }}".</p>
++    <div v-else class="overflow-x-auto border rounded-xl border-n-weak">
++      <table class="w-full text-sm border-collapse">
++        <thead>
++          <tr class="text-xs text-left bg-n-alpha-black1 text-n-slate-11">
++            <th class="px-4 py-2.5 font-medium">Department</th>
++            <th class="px-4 py-2.5 font-medium">PIC</th>
++            <th class="px-4 py-2.5 font-medium">CC</th>
++            <th class="px-4 py-2.5 font-medium">Tier-2 manager</th>
++            <th class="px-4 py-2.5"><span class="sr-only">Actions</span></th>
++          </tr>
++        </thead>
++        <tbody>
++          <tr
++            v-for="pic in shown"
++            :key="pic.department"
++            class="border-t cursor-pointer border-n-weak hover:bg-n-alpha-1"
++            :class="drawerOpen && editing && editing.department === pic.department ? 'bg-n-blue-2' : ''"
++            @click="openFor(pic)"
++          >
++            <td class="px-4 py-3 font-medium text-n-slate-12">{{ pic.department }}</td>
++            <td class="px-4 py-3">
++              <div class="text-n-slate-12">{{ pic.pic_name }}</div>
++              <div class="text-xs text-n-slate-11">{{ pic.pic_email }}</div>
++            </td>
++            <td class="px-4 py-3 text-n-slate-11">{{ ccText(pic) }}</td>
++            <td class="px-4 py-3">
++              <span v-if="pic.escalation_manager_email" class="text-n-slate-11">
++                {{ pic.escalation_manager_email }}
++              </span>
++              <span v-else class="px-2 py-0.5 text-xs font-medium rounded-full bg-n-amber-3 text-n-amber-11">
++                PIC re-alerted (no manager)
++              </span>
++            </td>
++            <td class="px-4 py-3 text-right">
++              <button
++                type="button"
++                class="font-medium text-n-brand hover:underline"
++                @click.stop="openFor(pic)"
++              >
++                Edit
++              </button>
++            </td>
++          </tr>
++        </tbody>
++      </table>
++    </div>
++
++    <PicDrawer :open="drawerOpen" :pic="editing" @close="drawerOpen = false" @saved="onSaved" />
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/views/escalationRouting/EmailChips.vue b/app/javascript/dashboard/views/escalationRouting/EmailChips.vue
+new file mode 100644
+index 0000000..94a96f1
+--- /dev/null
++++ b/app/javascript/dashboard/views/escalationRouting/EmailChips.vue
+@@ -0,0 +1,84 @@
++<script setup>
++// Emails as removable chips (patch 0101). Enter, comma, Tab or blur turns the
++// typed text into a chip; a pasted "a@x.com, b@y.com" becomes two. An invalid
++// address stays visible as a red chip and reports `invalid` so the drawer can
++// block Save -- it is never silently dropped.
++import { computed, ref, watch } from 'vue';
++import { isEmail } from './routingHelpers';
++
++const props = defineProps({
++  modelValue: { type: Array, default: () => [] },
++  label: { type: String, required: true },
++  placeholder: { type: String, default: 'Type an email, press Enter' },
++});
++const emit = defineEmits(['update:modelValue', 'invalid']);
++
++const draft = ref('');
++const bad = computed(() => props.modelValue.filter(e => !isEmail(e)));
++watch(bad, list => emit('invalid', list.length > 0), { immediate: true });
++
++function commit() {
++  const parts = draft.value
++    .split(/[,\s]+/)
++    .map(s => s.trim())
++    .filter(Boolean);
++  if (!parts.length) return;
++  const next = [...props.modelValue];
++  parts.forEach(p => {
++    if (!next.includes(p)) next.push(p);
++  });
++  emit('update:modelValue', next);
++  draft.value = '';
++}
++
++function remove(email) {
++  emit('update:modelValue', props.modelValue.filter(e => e !== email));
++}
++
++function onKeydown(event) {
++  if (event.key === 'Enter' || event.key === ',') {
++    event.preventDefault();
++    commit();
++  } else if (event.key === 'Backspace' && !draft.value && props.modelValue.length) {
++    remove(props.modelValue[props.modelValue.length - 1]);
++  }
++}
++</script>
++
++<template>
++  <div class="flex flex-col gap-1.5">
++    <div
++      class="flex flex-wrap items-center gap-1.5 p-2 min-h-10 border rounded-lg bg-n-alpha-black2"
++      :class="bad.length ? 'border-n-ruby-9' : 'border-n-weak'"
++    >
++      <span
++        v-for="email in modelValue"
++        :key="email"
++        class="inline-flex items-center gap-1 py-1 pl-2.5 pr-1 text-sm rounded-full"
++        :class="isEmail(email) ? 'bg-n-alpha-2 text-n-slate-12' : 'bg-n-ruby-3 text-n-ruby-11'"
++      >
++        {{ email }}
++        <button
++          type="button"
++          :aria-label="`Remove ${email}`"
++          class="flex items-center justify-center rounded-full size-5 hover:bg-n-alpha-black1"
++          @click="remove(email)"
++        >
++          <span class="i-lucide-x size-3" aria-hidden="true" />
++        </button>
++      </span>
++      <input
++        v-model="draft"
++        type="text"
++        :aria-label="label"
++        :placeholder="modelValue.length ? '' : placeholder"
++        class="flex-1 min-w-[140px] !mb-0 !p-0 text-sm bg-transparent border-0 outline-none !h-auto text-n-slate-12"
++        @keydown="onKeydown"
++        @blur="commit"
++      />
++    </div>
++    <p v-if="bad.length" class="text-xs text-n-ruby-11">
++      "{{ bad[0] }}" is not a valid email. Fix or remove it to save.
++    </p>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/views/escalationRouting/LadderStatusBanner.vue b/app/javascript/dashboard/views/escalationRouting/LadderStatusBanner.vue
+new file mode 100644
+index 0000000..3d3bdbc
+--- /dev/null
++++ b/app/javascript/dashboard/views/escalationRouting/LadderStatusBanner.vue
+@@ -0,0 +1,75 @@
++<script setup>
++// What the dealer ladder is doing right now, in one line (patch 0101). Reads
++// the `effective` block of GET /admin/escalation/ladder -- what is in force,
++// not what the form holds -- so an unsaved edit never changes the banner.
++import { computed } from 'vue';
++import { ladderMode } from './routingHelpers';
++
++const props = defineProps({
++  effective: { type: Object, default: null },
++  showLink: { type: Boolean, default: false },
++});
++const emit = defineEmits(['open-ladder']);
++
++const mode = computed(() => (props.effective ? ladderMode(props.effective) : null));
++const COPY = {
++  off: {
++    badge: 'OFF',
++    title: 'Dealer ladder is off',
++    text: 'Only the first escalation email is sent. No reminders follow.',
++    tone: 'bg-n-slate-3 border-n-weak text-n-slate-12',
++    badgeTone: 'bg-n-slate-6 text-n-slate-12',
++  },
++  dry_run: {
++    badge: 'DRY RUN',
++    title: 'Dealer ladder is running, but emails nobody',
++    text: 'It logs the reminders it would send.',
++    tone: 'bg-n-amber-3 border-n-amber-6 text-n-amber-12',
++    badgeTone: 'bg-n-amber-5 text-n-amber-12',
++  },
++  live: {
++    badge: 'LIVE',
++    title: 'Dealer ladder is emailing real dealer contacts',
++    text: 'Reminders go out as each step falls due.',
++    tone: 'bg-n-ruby-3 border-n-ruby-6 text-n-ruby-12',
++    badgeTone: 'bg-n-ruby-9 text-white',
++  },
++};
++const copy = computed(() => (mode.value ? COPY[mode.value] : null));
++</script>
++
++<template>
++  <section
++    v-if="copy"
++    aria-label="Ladder status"
++    class="flex flex-wrap items-center gap-4 px-5 py-4 border rounded-xl"
++    :class="copy.tone"
++  >
++    <div class="flex flex-col flex-1 gap-1 min-w-[280px]">
++      <div class="flex items-center gap-2">
++        <span class="px-2.5 py-0.5 text-xs font-semibold rounded-full" :class="copy.badgeTone">
++          {{ copy.badge }}
++        </span>
++        <strong class="text-sm font-semibold">{{ copy.title }}</strong>
++      </div>
++      <p class="text-sm">
++        {{ copy.text }}
++        <template v-if="mode !== 'off' && effective.scan_interval_seconds">
++          Checks every {{ effective.scan_interval_seconds }} s.
++        </template>
++        <template v-if="effective.from_store === false">
++          (From the deployment — nothing set here yet.)
++        </template>
++      </p>
++    </div>
++    <button
++      v-if="showLink"
++      type="button"
++      class="px-3.5 py-2 text-sm font-medium border rounded-lg bg-n-solid-1 border-n-weak text-n-slate-12 hover:bg-n-alpha-2"
++      @click="emit('open-ladder')"
++    >
++      Open ladder settings
++    </button>
++  </section>
++  <p v-else class="text-sm text-n-slate-11">Ladder status is not available.</p>
++</template>
+diff --git a/app/javascript/dashboard/views/escalationRouting/LadderTab.vue b/app/javascript/dashboard/views/escalationRouting/LadderTab.vue
+new file mode 100644
+index 0000000..340a7ba
+--- /dev/null
++++ b/app/javascript/dashboard/views/escalationRouting/LadderTab.vue
+@@ -0,0 +1,201 @@
++<script setup>
++// Ladder tab (patch 0101): Off / Dry run / Live plus the steps as a timeline.
++// The three-way choice is stored as the same two booleans as before
++// (modeToFlags); blank hours are sent as null ("use the deployment's value"),
++// never 0 -- a 0-hour reminder would email principals at once. Same PUT and
++// body as the pre-0101 saveLadder.
++import { computed, ref, watch } from 'vue';
++import { useAlert } from 'dashboard/composables';
++import { adminRequest } from 'dashboard/api/protonAdmin';
++import LadderStatusBanner from './LadderStatusBanner.vue';
++import { LADDER_PATH, ladderMode, modeToFlags, numOrNull, skippingDealers } from './routingHelpers';
++
++const props = defineProps({
++  form: { type: Object, required: true }, // the loaded ladder form
++  effective: { type: Object, default: null },
++  dealers: { type: Array, default: () => [] },
++  labels: { type: Object, default: () => ({}) },
++});
++const emit = defineEmits(['saved']);
++
++const local = ref({});
++const mode = ref('off');
++const saving = ref(false);
++
++watch(
++  () => props.form,
++  f => {
++    local.value = { ...f };
++    mode.value = ladderMode(f);
++  },
++  { immediate: true, deep: true }
++);
++
++const MODES = [
++  { value: 'off', label: 'Off', active: 'bg-n-slate-3 text-n-slate-12' },
++  { value: 'dry_run', label: 'Dry run', active: 'bg-n-amber-3 text-n-amber-12' },
++  { value: 'live', label: 'Live', active: 'bg-n-ruby-3 text-n-ruby-12' },
++];
++
++const principal = computed(() => props.labels.principal || 'Dealer Principal');
++const owner = computed(() => props.labels.owner || 'Dealer Owner');
++const rep = computed(() => props.labels.rep || 'CRE');
++const skip3 = computed(() => skippingDealers(3, props.dealers));
++const skip4 = computed(() => skippingDealers(4, props.dealers));
++
++function skipText(list, role) {
++  if (!list.length) return '';
++  const who = list.slice(0, 3).join(', ') + (list.length > 3 ? ` and ${list.length - 3} more` : '');
++  return `${list.length} ${list.length === 1 ? props.labels.partnerLower || 'dealer' : props.labels.partnerPluralLower || 'dealers'} ${list.length === 1 ? 'has' : 'have'} no ${role} (${who}): this step is skipped for ${list.length === 1 ? 'it' : 'them'}.`;
++}
++
++const steps = computed(() => [
++  { no: 1, title: 'Step 1 · First escalation', when: '0 h', note: 'sent by the escalate label', to: `${rep.value}, Sales/Aftersales Manager`, cc: `${principal.value}, Area/Regional Manager, HOD` },
++  { no: 2, key: 'step2_hours', title: 'Step 2 · Acknowledgement due', quiet: true, body: "Nothing is sent. The dealer's window to acknowledge." },
++  { no: 3, key: 'step3_hours', title: 'Step 3 · 1st reminder', to: principal.value, cc: `${owner.value}, Sales/AS Manager, ${rep.value}, Area/Regional Manager, HOD`, warn: skipText(skip3.value, principal.value) },
++  { no: 4, key: 'step4_hours', title: 'Step 4 · 2nd reminder', to: owner.value, cc: `${principal.value}, Sales/AS Manager, ${rep.value}, Area/Regional Manager, HOD`, warn: skipText(skip4.value, owner.value) },
++  { no: 5, key: 'step5_hours', title: 'Step 5 · Final escalation by telephone', note: 'the sweep after step 4', body: `Raises a call task for the ${principal.value} and ${owner.value}. Sends no email.` },
++  { no: 6, title: 'Step 6 · 48 h unresolved alert', when: '48 h', fixed: true, to: owner.value, cc: `${principal.value}, Area/Regional Manager, HOD`, body: 'Fires even if the dealer replied; only resolving the case stops it.' },
++]);
++
++async function save() {
++  saving.value = true;
++  const flags = modeToFlags(mode.value);
++  try {
++    await adminRequest(LADDER_PATH, {
++      method: 'PUT',
++      body: {
++        enabled: flags.enabled,
++        dry_run: flags.dry_run,
++        scan_interval_seconds: numOrNull(local.value.scan_interval_seconds),
++        step2_hours: numOrNull(local.value.step2_hours),
++        step3_hours: numOrNull(local.value.step3_hours),
++        step4_hours: numOrNull(local.value.step4_hours),
++        step5_hours: numOrNull(local.value.step5_hours),
++      },
++    });
++    useAlert(
++      mode.value === 'live'
++        ? 'Ladder saved. It is now sending reminders for real.'
++        : 'Ladder settings saved.'
++    );
++    emit('saved');
++  } catch (err) {
++    useAlert('Failed to save ladder settings: ' + (err.message || String(err)));
++  } finally {
++    saving.value = false;
++  }
++}
++
++const hoursInput =
++  'w-16 h-9 px-2 !mb-0 text-sm font-semibold text-right border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12';
++</script>
++
++<template>
++  <div class="flex flex-col gap-5">
++    <LadderStatusBanner :effective="effective" />
++
++    <section aria-label="Ladder mode" class="flex flex-wrap items-center gap-5 px-5 py-4 border rounded-xl border-n-weak">
++      <div class="flex flex-col flex-1 gap-1 min-w-[260px]">
++        <strong class="text-sm font-semibold text-n-slate-12">How the ladder runs</strong>
++        <span class="text-sm text-n-slate-11">
++          Timers count <strong class="font-semibold text-n-slate-12">working hours</strong> from the moment the case was escalated.
++        </span>
++      </div>
++      <div role="radiogroup" aria-label="Ladder mode" class="flex overflow-hidden border rounded-lg border-n-weak">
++        <label
++          v-for="m in MODES"
++          :key="m.value"
++          class="flex items-center gap-2 px-3.5 py-2 text-sm cursor-pointer border-l first:border-l-0 border-n-weak"
++          :class="mode === m.value ? `${m.active} font-medium` : 'text-n-slate-11'"
++        >
++          <input v-model="mode" type="radio" name="ladder-mode" :value="m.value" class="!mb-0" />
++          {{ m.label }}
++        </label>
++      </div>
++      <label class="flex items-center gap-2 text-sm text-n-slate-12">
++        Check every
++        <input
++          v-model="local.scan_interval_seconds"
++          type="number"
++          min="30"
++          placeholder="300"
++          class="w-20 h-9 px-2 !mb-0 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12"
++        />
++        seconds
++      </label>
++    </section>
++
++    <p v-if="mode === 'live'" class="px-4 py-3 text-sm rounded-lg bg-n-ruby-3 text-n-ruby-12">
++      Reminders will be emailed to real {{ labels.partnerLower || 'dealer' }} contacts. Run with dry run on first and read
++      the log for a full working week before switching it off.
++    </p>
++    <p v-else-if="mode === 'dry_run'" class="px-4 py-3 text-sm rounded-lg bg-n-amber-3 text-n-amber-12">
++      Dry run: the ladder logs what it would send and emails nobody.
++    </p>
++
++    <ol class="flex flex-col">
++      <li v-for="(s, i) in steps" :key="s.no" class="grid gap-x-4 grid-cols-[96px_28px_minmax(0,1fr)]">
++        <div class="flex flex-col items-end gap-1 pt-3">
++          <template v-if="s.key">
++            <input v-model="local[s.key]" type="number" min="0" step="0.5" :aria-label="`Step ${s.no} hours`" :class="hoursInput" />
++            <span class="text-xs text-n-slate-11">hours</span>
++          </template>
++          <template v-else>
++            <span class="pt-1.5 text-sm font-semibold text-n-slate-12">{{ s.when }}</span>
++            <span v-if="s.fixed" class="text-xs text-n-slate-11">fixed</span>
++          </template>
++        </div>
++        <div class="flex flex-col items-center">
++          <span
++            class="mt-[18px] size-3.5 shrink-0"
++            :class="
++              s.fixed
++                ? 'rounded-sm bg-n-ruby-9 rotate-45'
++                : s.quiet
++                  ? 'rounded-full border-2 border-n-slate-9 bg-n-solid-1'
++                  : 'rounded-full bg-n-brand'
++            "
++            aria-hidden="true"
++          />
++          <span v-if="i < steps.length - 1" class="flex-1 w-0.5 bg-n-weak" aria-hidden="true" />
++        </div>
++        <div
++          class="flex flex-col gap-1.5 px-4 py-3.5 mb-3.5 border rounded-xl"
++          :class="
++            s.fixed
++              ? 'border-n-ruby-6 bg-n-ruby-2'
++              : s.quiet
++                ? 'border-dashed border-n-slate-7 bg-n-alpha-1'
++                : 'border-n-weak'
++          "
++        >
++          <div class="flex flex-wrap items-baseline gap-2">
++            <strong class="text-sm font-semibold text-n-slate-12">{{ s.title }}</strong>
++            <span v-if="s.note" class="text-sm text-n-slate-11">{{ s.note }}</span>
++          </div>
++          <div v-if="s.to" class="text-sm leading-relaxed text-n-slate-12">
++            <span class="text-n-slate-11">To</span> {{ s.to }}
++            <template v-if="s.cc"> · <span class="text-n-slate-11">CC</span> {{ s.cc }}</template>
++          </div>
++          <div v-if="s.body" class="text-sm leading-relaxed" :class="s.quiet ? 'text-n-slate-11' : 'text-n-slate-12'">
++            {{ s.body }}
++          </div>
++          <div v-if="s.warn" class="text-xs text-n-ruby-11">{{ s.warn }}</div>
++        </div>
++      </li>
++    </ol>
++
++    <div class="flex flex-wrap items-center gap-4 pt-2 border-t border-n-weak">
++      <button
++        type="button"
++        :disabled="saving"
++        class="h-10 px-5 text-sm font-medium text-white rounded-lg bg-n-brand hover:opacity-90 disabled:opacity-50"
++        @click="save"
++      >
++        {{ saving ? 'Saving…' : 'Save ladder' }}
++      </button>
++      <span class="text-xs text-n-slate-11">Blank hours use the deployment's value.</span>
++    </div>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/views/escalationRouting/OverviewTab.vue b/app/javascript/dashboard/views/escalationRouting/OverviewTab.vue
+new file mode 100644
+index 0000000..92b9b58
+--- /dev/null
++++ b/app/javascript/dashboard/views/escalationRouting/OverviewTab.vue
+@@ -0,0 +1,149 @@
++<script setup>
++// Overview tab (patch 0101): is the ladder sending, what is misconfigured, and
++// what is escalating right now. Everything here is derived from the data the
++// page shell already loaded -- this tab makes no request of its own.
++import { computed } from 'vue';
++import LadderStatusBanner from './LadderStatusBanner.vue';
++import { attentionItems, rowGap } from './routingHelpers';
++
++const props = defineProps({
++  pics: { type: Array, default: () => [] },
++  dealers: { type: Array, default: () => [] },
++  effective: { type: Object, default: null },
++  inFlight: { type: Array, default: () => [] },
++  inFlightError: { type: String, default: '' },
++  loadingInFlight: { type: Boolean, default: false },
++  labels: { type: Object, default: () => ({}) },
++  stateLabel: { type: Function, required: true },
++});
++const emit = defineEmits(['open-record', 'open-tab']);
++
++const items = computed(() => attentionItems(props.pics, props.dealers, props.labels));
++
++const rows = computed(() =>
++  props.inFlight.map(row => {
++    const gap = rowGap(row, props.dealers);
++    let due = '—';
++    if (row.next_due_in_working_hours === 0) due = 'due now';
++    else if (row.next_due_in_working_hours !== null && row.next_due_in_working_hours !== undefined)
++      due = `step ${row.next_step_no ?? '?'} in ${row.next_due_in_working_hours} h`;
++    let chip = { text: props.stateLabel(row.state), tone: 'bg-n-slate-3 text-n-slate-11' };
++    if (gap) chip = { text: 'Gap', tone: 'bg-n-ruby-3 text-n-ruby-11' };
++    else if (row.state === 'climbing') chip = { text: 'Climbing', tone: 'bg-n-blue-3 text-n-blue-11' };
++    return {
++      ...row,
++      where: row.rung ? `Step ${row.rung}` : '—',
++      next: gap || due,
++      chip,
++    };
++  })
++);
++
++const steps = [
++  'The agent adds a dept_… label and, for a dealer case, a dealer_… label.',
++  'The escalate label emails the people set on the Departments and Dealers tabs.',
++  "If the dealer doesn't reply, the ladder emails someone more senior at each step.",
++];
++</script>
++
++<template>
++  <div class="flex flex-col gap-6">
++    <LadderStatusBanner :effective="effective" show-link @open-ladder="emit('open-tab', 'ladder')" />
++
++    <div class="grid gap-5 grid-cols-[repeat(auto-fit,minmax(340px,1fr))]">
++      <section class="flex flex-col gap-3 p-5 border rounded-xl border-n-weak" aria-labelledby="er-attention">
++        <div class="flex items-baseline justify-between">
++          <h2 id="er-attention" class="text-sm font-semibold text-n-slate-12">Needs attention</h2>
++          <span class="text-xs text-n-slate-11">
++            {{ items.length ? `${items.length} item${items.length === 1 ? '' : 's'}` : 'All set' }}
++          </span>
++        </div>
++        <p v-if="!items.length" class="text-sm text-n-slate-11">
++          Every department and {{ labels.partnerLower || 'dealer' }} you can see has someone to email at each step.
++        </p>
++        <ul v-else class="flex flex-col">
++          <li
++            v-for="item in items"
++            :key="`${item.kind}-${item.id}-${item.text}`"
++            class="flex items-start gap-3 py-3 border-t border-n-weak first:border-t-0"
++          >
++            <span
++              class="mt-1.5 rounded-full size-2 shrink-0"
++              :class="item.severity === 'high' ? 'bg-n-ruby-9' : 'bg-n-amber-9'"
++              aria-hidden="true"
++            />
++            <div class="flex flex-col flex-1 min-w-0 gap-0.5">
++              <span class="text-sm text-n-slate-12">{{ item.text }}</span>
++              <span class="text-xs text-n-slate-11">{{ item.detail }}</span>
++            </div>
++            <button
++              type="button"
++              class="text-sm font-medium text-n-brand hover:underline"
++              @click="emit('open-record', { kind: item.kind, id: item.id })"
++            >
++              Fix
++            </button>
++          </li>
++        </ul>
++      </section>
++
++      <section class="flex flex-col gap-3 p-5 border rounded-xl border-n-weak" aria-labelledby="er-how">
++        <h2 id="er-how" class="text-sm font-semibold text-n-slate-12">How a case is routed</h2>
++        <ol class="flex flex-col gap-3">
++          <li v-for="(text, i) in steps" :key="i" class="flex gap-3 text-sm text-n-slate-12">
++            <span class="flex items-center justify-center text-xs font-semibold rounded-full size-6 shrink-0 bg-n-blue-3 text-n-blue-11">
++              {{ i + 1 }}
++            </span>
++            <span class="leading-relaxed">{{ text }}</span>
++          </li>
++        </ol>
++      </section>
++    </div>
++
++    <section class="overflow-hidden border rounded-xl border-n-weak" aria-labelledby="er-flight">
++      <div class="flex items-baseline justify-between px-5 py-4">
++        <h2 id="er-flight" class="text-sm font-semibold text-n-slate-12">
++          Escalations in flight ({{ inFlight.length }})
++        </h2>
++      </div>
++      <p v-if="inFlightError" class="px-5 pb-4 text-sm text-n-ruby-11">{{ inFlightError }}</p>
++      <p v-else-if="loadingInFlight" class="px-5 pb-4 text-sm text-n-slate-11">Loading…</p>
++      <p v-else-if="!inFlight.length" class="px-5 pb-4 text-sm text-n-slate-11">No escalated cases right now.</p>
++      <div v-else class="overflow-x-auto">
++        <table class="w-full text-sm border-collapse">
++          <thead>
++            <tr class="text-left bg-n-alpha-black1 text-n-slate-11">
++              <th class="px-5 py-2.5 font-medium">Case</th>
++              <th class="px-5 py-2.5 font-medium">{{ labels.partnerTitle || 'Dealer' }}</th>
++              <th class="px-5 py-2.5 font-medium">Where it is</th>
++              <th class="px-5 py-2.5 font-medium">Next</th>
++              <th class="px-5 py-2.5 font-medium">State</th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr v-for="row in rows" :key="row.conv_id" class="border-t border-n-weak">
++              <td class="px-5 py-3">
++                <router-link
++                  :to="{ name: 'inbox_conversation', params: { conversation_id: row.conv_id } }"
++                  class="font-medium text-n-brand hover:underline"
++                >
++                  #{{ row.conv_id }}
++                </router-link>
++              </td>
++              <td class="px-5 py-3 text-n-slate-12">{{ row.dealer || '—' }}</td>
++              <td class="px-5 py-3 text-n-slate-11">{{ row.where }}</td>
++              <td class="px-5 py-3" :class="row.chip.text === 'Gap' ? 'text-n-ruby-11' : 'text-n-slate-11'">
++                {{ row.next }}
++              </td>
++              <td class="px-5 py-3">
++                <span class="px-2.5 py-0.5 text-xs font-medium rounded-full" :class="row.chip.tone">
++                  {{ row.chip.text }}
++                </span>
++              </td>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++    </section>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/views/escalationRouting/PicDrawer.vue b/app/javascript/dashboard/views/escalationRouting/PicDrawer.vue
+new file mode 100644
+index 0000000..34329d4
+--- /dev/null
++++ b/app/javascript/dashboard/views/escalationRouting/PicDrawer.vue
+@@ -0,0 +1,163 @@
++<script setup>
++// Add / edit one department's PIC (patch 0101). Works on a COPY of the record:
++// Cancel leaves the list exactly as it was. Same API calls and bodies as the
++// pre-0101 page (upsertPic / deletePic, cc_emails as an array).
++import { computed, ref, watch } from 'vue';
++import { useAlert } from 'dashboard/composables';
++import { upsertPic, deletePic } from 'dashboard/api/protonAdmin';
++import RecordDrawer from './RecordDrawer.vue';
++import EmailChips from './EmailChips.vue';
++import { isEmail, splitEmails } from './routingHelpers';
++
++const props = defineProps({
++  open: { type: Boolean, default: false },
++  // null = a new department
++  pic: { type: Object, default: null },
++});
++const emit = defineEmits(['close', 'saved']);
++
++const blank = () => ({
++  department: '',
++  pic_name: '',
++  pic_email: '',
++  pic_whatsapp: '',
++  cc_emails: [],
++  escalation_manager_email: '',
++});
++const form = ref(blank());
++const ccInvalid = ref(false);
++const saving = ref(false);
++const isNew = computed(() => !props.pic);
++
++watch(
++  () => [props.open, props.pic],
++  () => {
++    if (!props.open) return;
++    const p = props.pic;
++    form.value = p
++      ? {
++          department: p.department,
++          pic_name: p.pic_name || '',
++          pic_email: p.pic_email || '',
++          pic_whatsapp: p.pic_whatsapp || '',
++          cc_emails: splitEmails(p.cc_emails),
++          escalation_manager_email: p.escalation_manager_email || '',
++        }
++      : blank();
++  },
++  { immediate: true }
++);
++
++const managerOk = computed(
++  () => !form.value.escalation_manager_email.trim() || isEmail(form.value.escalation_manager_email)
++);
++const canSave = computed(
++  () =>
++    Boolean(form.value.department.trim() && form.value.pic_name.trim()) &&
++    isEmail(form.value.pic_email) &&
++    managerOk.value &&
++    !ccInvalid.value
++);
++
++async function save() {
++  if (!canSave.value) {
++    useAlert('Department, PIC name and a valid PIC email are required.');
++    return;
++  }
++  saving.value = true;
++  try {
++    // an edit writes back to the stored key, exactly as the old page did
++    await upsertPic(isNew.value ? form.value.department.trim() : props.pic.department, {
++      pic_name: form.value.pic_name,
++      pic_email: form.value.pic_email.trim(),
++      pic_whatsapp: form.value.pic_whatsapp,
++      cc_emails: splitEmails(form.value.cc_emails),
++      escalation_manager_email: form.value.escalation_manager_email.trim(),
++    });
++    useAlert(isNew.value ? 'PIC saved.' : 'PIC updated.');
++    emit('saved');
++  } catch (err) {
++    useAlert('Failed to save PIC: ' + (err.message || String(err)));
++  } finally {
++    saving.value = false;
++  }
++}
++
++async function remove() {
++  const department = props.pic?.department;
++  if (!department) return;
++  // eslint-disable-next-line no-alert
++  if (!window.confirm(`Delete the PIC for "${department}"? This cannot be undone.`)) return;
++  saving.value = true;
++  try {
++    await deletePic(department);
++    useAlert('PIC deleted.');
++    emit('saved');
++  } catch (err) {
++    useAlert('Failed to delete PIC: ' + (err.message || String(err)));
++  } finally {
++    saving.value = false;
++  }
++}
++
++const input =
++  'w-full h-10 px-3 !mb-0 text-sm border rounded-lg border-n-weak bg-n-alpha-black2 text-n-slate-12';
++</script>
++
++<template>
++  <RecordDrawer
++    :open="open"
++    :eyebrow="isNew ? 'Add department' : 'Edit department'"
++    :title="isNew ? 'New department' : pic.department"
++    :saving="saving"
++    :can-save="canSave"
++    :deletable="!isNew"
++    delete-label="Delete department"
++    @save="save"
++    @cancel="emit('close')"
++    @delete="remove"
++  >
++    <fieldset class="flex flex-col gap-4">
++      <legend class="mb-3 text-sm font-semibold text-n-slate-12">Person in charge</legend>
++      <label v-if="isNew" class="flex flex-col gap-1.5">
++        <span class="text-sm font-medium text-n-slate-12">Department label</span>
++        <input v-model="form.department" type="text" required placeholder="dept_engineer" :class="input" />
++        <span class="text-xs text-n-slate-11">The dept_… label agents put on a case.</span>
++      </label>
++      <label class="flex flex-col gap-1.5">
++        <span class="text-sm font-medium text-n-slate-12">Name</span>
++        <input v-model="form.pic_name" type="text" required :class="input" />
++      </label>
++      <label class="flex flex-col gap-1.5">
++        <span class="text-sm font-medium text-n-slate-12">Email</span>
++        <input v-model="form.pic_email" type="email" required :class="input" />
++      </label>
++      <label class="flex flex-col gap-1.5">
++        <span class="text-sm font-medium text-n-slate-12">
++          WhatsApp <span class="font-normal text-n-slate-11">(optional)</span>
++        </span>
++        <input v-model="form.pic_whatsapp" type="text" placeholder="+60…" :class="input" />
++      </label>
++    </fieldset>
++
++    <fieldset class="flex flex-col gap-2">
++      <legend class="mb-3 text-sm font-semibold text-n-slate-12">Also copied (CC)</legend>
++      <EmailChips v-model="form.cc_emails" label="Add a CC email" @invalid="ccInvalid = $event" />
++    </fieldset>
++
++    <fieldset class="flex flex-col gap-1.5">
++      <legend class="mb-3 text-sm font-semibold text-n-slate-12">If nobody answers</legend>
++      <label class="flex flex-col gap-1.5">
++        <span class="text-sm font-medium text-n-slate-12">Tier-2 manager email</span>
++        <input v-model="form.escalation_manager_email" type="email" placeholder="manager@example.com" :class="input" />
++      </label>
++      <span class="text-xs leading-relaxed" :class="managerOk ? 'text-n-slate-11' : 'text-n-ruby-11'">
++        {{
++          managerOk
++            ? 'Alerted when an escalation goes unanswered past the tier-2 window. Leave blank to re-alert the PIC.'
++            : 'Not a valid email.'
++        }}
++      </span>
++    </fieldset>
++  </RecordDrawer>
++</template>
+diff --git a/app/javascript/dashboard/views/escalationRouting/RecordDrawer.vue b/app/javascript/dashboard/views/escalationRouting/RecordDrawer.vue
+new file mode 100644
+index 0000000..1a891b9
+--- /dev/null
++++ b/app/javascript/dashboard/views/escalationRouting/RecordDrawer.vue
+@@ -0,0 +1,102 @@
++<script setup>
++// The right-side panel every Escalation Routing form opens in (patch 0101).
++// Replaces the old inline row editing: one full-size form, Save/Cancel/Delete
++// in a fixed footer. Escape and the backdrop close it like Cancel.
++import { nextTick, onBeforeUnmount, onMounted } from 'vue';
++
++const props = defineProps({
++  open: { type: Boolean, default: false },
++  eyebrow: { type: String, default: '' },
++  title: { type: String, default: '' },
++  saving: { type: Boolean, default: false },
++  canSave: { type: Boolean, default: true },
++  deletable: { type: Boolean, default: false },
++  deleteLabel: { type: String, default: 'Delete' },
++});
++const emit = defineEmits(['save', 'cancel', 'delete']);
++
++// Blur first: an email still being typed in a chips input becomes a chip on
++// blur, so the first Save click is never lost to a stale disabled state. The
++// drawer's own save() validates and explains what is missing.
++async function onSave() {
++  if (props.saving) return;
++  document.activeElement?.blur?.();
++  await nextTick();
++  emit('save');
++}
++
++function onKey(event) {
++  if (props.open && event.key === 'Escape') emit('cancel');
++}
++onMounted(() => window.addEventListener('keydown', onKey));
++onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
++</script>
++
++<template>
++  <div v-if="open" class="fixed inset-0 z-50 flex justify-end">
++    <div
++      class="absolute inset-0 bg-n-alpha-black1"
++      aria-hidden="true"
++      @click="emit('cancel')"
++    />
++    <aside
++      role="dialog"
++      aria-modal="true"
++      :aria-label="title"
++      class="relative flex flex-col w-full h-full max-w-[480px] bg-n-solid-1 border-l border-n-weak shadow-xl"
++    >
++      <div class="flex items-center justify-between px-6 py-5 border-b border-n-weak">
++        <div class="min-w-0">
++          <p v-if="eyebrow" class="text-xs font-medium tracking-wide uppercase text-n-slate-11">
++            {{ eyebrow }}
++          </p>
++          <h2 class="mt-0.5 text-base font-semibold truncate text-n-slate-12">{{ title }}</h2>
++        </div>
++        <button
++          type="button"
++          aria-label="Close"
++          class="flex items-center justify-center rounded-lg size-9 text-n-slate-11 hover:bg-n-alpha-2"
++          @click="emit('cancel')"
++        >
++          <span class="i-lucide-x size-4" aria-hidden="true" />
++        </button>
++      </div>
++      <form
++        class="flex flex-col flex-1 gap-6 px-6 py-5 overflow-y-auto"
++        @submit.prevent="onSave"
++      >
++        <slot />
++        <button type="submit" class="hidden" aria-hidden="true" tabindex="-1" />
++      </form>
++      <div class="flex items-center gap-3 px-6 py-4 border-t border-n-weak">
++        <button
++          v-if="deletable"
++          type="button"
++          :disabled="saving"
++          class="px-1 py-2 text-sm font-medium text-n-ruby-11 hover:underline disabled:opacity-50"
++          @click="emit('delete')"
++        >
++          {{ deleteLabel }}
++        </button>
++        <span class="flex-1" />
++        <button
++          type="button"
++          class="h-10 px-4 text-sm font-medium border rounded-lg border-n-weak text-n-slate-12 hover:bg-n-alpha-2"
++          @click="emit('cancel')"
++        >
++          Cancel
++        </button>
++        <button
++          type="button"
++          :disabled="saving"
++          :aria-disabled="!canSave"
++          class="h-10 px-5 text-sm font-medium text-white rounded-lg bg-n-brand hover:opacity-90 disabled:opacity-50"
++          :class="canSave ? '' : 'opacity-60'"
++          @click="onSave"
++        >
++          {{ saving ? 'Saving…' : 'Save' }}
++        </button>
++      </div>
++    </aside>
++  </div>
++</template>
+diff --git a/app/javascript/dashboard/views/escalationRouting/routingHelpers.js b/app/javascript/dashboard/views/escalationRouting/routingHelpers.js
+new file mode 100644
+index 0000000..d0165e3
+--- /dev/null
++++ b/app/javascript/dashboard/views/escalationRouting/routingHelpers.js
+@@ -0,0 +1,130 @@
++// Escalation Routing refresh (patch 0101, 16 Nov 2026): the pure helpers the
++// tabs share. No I/O here -- the page shell owns every request, so these stay
++// testable and the tabs stay presentational.
++
++export const LADDER_PATH = '/admin/escalation/ladder';
++
++// Blank input means "inherit the deployment's value", which the API expresses
++// as null. '' would be a 422 and 0 would be a real (and very wrong) timer.
++export function numOrNull(value) {
++  const raw = String(value ?? '').trim();
++  if (!raw) return null;
++  const n = Number(raw);
++  return Number.isNaN(n) ? null : n;
++}
++
++export function splitEmails(value) {
++  if (Array.isArray(value)) return value.map(s => String(s).trim()).filter(Boolean);
++  return String(value || '')
++    .split(',')
++    .map(s => s.trim())
++    .filter(Boolean);
++}
++
++const EMAIL_RE = /^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/;
++export function isEmail(value) {
++  return EMAIL_RE.test(String(value || '').trim());
++}
++
++export const LADDER_RUNGS = [
++  { key: 'step2_hours', label: 'Step 2 — acknowledgement due', hint: 'Dealer CRE is expected to reply by now. Nothing is sent.' },
++  { key: 'step3_hours', label: 'Step 3 — 1st reminder', hint: 'Emails the Dealer Principal.' },
++  { key: 'step4_hours', label: 'Step 4 — 2nd reminder', hint: 'Emails the Dealer Owner.' },
++  { key: 'step5_hours', label: 'Step 5 — telephone', hint: 'Raises a call task. Sends no email.' },
++];
++
++// role key -> the label an operator recognises, and which rung uses it.
++export const DEALER_ROLES = [
++  { key: 'cre', label: 'Dealer CRE', short: 'CRE', rung: 'Step 1' },
++  { key: 'sales_aftersales_mgr', label: 'Sales / Aftersales Mgr', short: 'Sales/AS Mgr', rung: 'Step 1' },
++  { key: 'principal', label: 'Dealer Principal', short: 'Principal', rung: 'Step 3 · 1st reminder' },
++  { key: 'owner', label: 'Dealer Owner', short: 'Owner', rung: 'Step 4 · 2nd reminder' },
++];
++
++export function contactsFrom(form) {
++  const out = {};
++  DEALER_ROLES.forEach(({ key }) => {
++    const value = String(form[key] || '').trim();
++    if (value) out[key] = value;
++  });
++  return out;
++}
++
++export function dealerMembers(dealer) {
++  if (Array.isArray(dealer?.emails)) return dealer.emails;
++  return dealer?.email ? [dealer.email] : [];
++}
++
++function hasContacts(dealer) {
++  return Boolean(dealer?.contacts && Object.keys(dealer.contacts).length);
++}
++
++// The step a missing role silences. A dealer configured as a plain group (no
++// named contacts at all) is not on the ladder, so it is never "missing" one.
++const SKIP_ROLE = { 3: 'principal', 4: 'owner' };
++
++export function skippingDealers(step, dealers) {
++  const role = SKIP_ROLE[step];
++  if (!role) return [];
++  return (dealers || [])
++    .filter(d => hasContacts(d) && !d.contacts[role])
++    .map(d => d.dealer);
++}
++
++// What the operator should fix. Lists only what the API returned, so a
++// dealer-scoped user is never told about dealers they cannot see.
++export function attentionItems(pics, dealers, labels = {}) {
++  const partner = labels.partner || 'dealer';
++  const items = [];
++  (dealers || []).forEach(d => {
++    if (!dealerMembers(d).length && !hasContacts(d)) {
++      items.push({ kind: 'dealer', id: d.dealer, severity: 'high', text: `${d.dealer} has nobody to email`, detail: `Escalations to this ${partner} reach no one.` });
++      return;
++    }
++    if (hasContacts(d) && !d.contacts.principal) {
++      items.push({ kind: 'dealer', id: d.dealer, severity: 'high', text: `${d.dealer} has no ${labels.principal || 'Dealer Principal'}`, detail: 'Step 3 (1st reminder) will be skipped for its cases.' });
++    }
++    if (hasContacts(d) && !d.contacts.owner) {
++      items.push({ kind: 'dealer', id: d.dealer, severity: 'high', text: `${d.dealer} has no ${labels.owner || 'Dealer Owner'}`, detail: 'Step 4 (2nd reminder) will be skipped for its cases.' });
++    }
++    if (!String(d.region || '').trim()) {
++      items.push({ kind: 'dealer', id: d.dealer, severity: 'medium', text: `${d.dealer} has no PRO-NET region`, detail: "No Area/Regional Manager or HOD is CC'd." });
++    }
++  });
++  (pics || []).forEach(p => {
++    if (!isEmail(p.pic_email)) {
++      items.push({ kind: 'pic', id: p.department, severity: 'high', text: `${p.department} has no valid PIC email`, detail: 'Escalations to this department reach no one.' });
++    } else if (!String(p.escalation_manager_email || '').trim()) {
++      items.push({ kind: 'pic', id: p.department, severity: 'medium', text: `${p.department} has no tier-2 manager`, detail: 'An unanswered escalation re-alerts the PIC instead.' });
++    }
++  });
++  return items;
++}
++
++// The three-way control over the two stored booleans. Off keeps dry_run on,
++// so turning the ladder back on can never start in live mode by accident.
++export function ladderMode({ enabled, dry_run: dryRun } = {}) {
++  if (!enabled) return 'off';
++  return dryRun ? 'dry_run' : 'live';
++}
++
++export function modeToFlags(mode) {
++  if (mode === 'live') return { enabled: true, dry_run: false };
++  if (mode === 'dry_run') return { enabled: true, dry_run: true };
++  return { enabled: false, dry_run: true };
++}
++
++// An in-flight case whose next rung names a role its dealer does not have.
++export function rowGap(row, dealers) {
++  const role = SKIP_ROLE[row?.next_step_no];
++  if (!role) return null;
++  const dealer = (dealers || []).find(d => d.dealer === row.dealer);
++  if (!dealer || !hasContacts(dealer) || dealer.contacts[role]) return null;
++  return `Step ${row.next_step_no} skipped — no ${role === 'principal' ? 'Principal' : 'Owner'}`;
++}
++
++export function matches(query, ...fields) {
++  const q = String(query || '').trim().toLowerCase();
++  if (!q) return true;
++  return fields.some(f => String(f || '').toLowerCase().includes(q));
++}

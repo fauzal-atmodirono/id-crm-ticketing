@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import itertools
 from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -571,7 +572,9 @@ async def test_pump_flushes_a_due_block_on_a_non_transcript_tick() -> None:
     only becomes true on the SECOND poll, which happens on an AudioOut
     event, not a transcript event -- so this fails if the per-tick poll is
     removed or narrowed to transcript branches only."""
-    now_values = iter([0.0, 0.0, 25.0, 25.0])
+    # 0 s through the transcript tick (three clock reads, one of them the
+    # 2026-11-16 turn-gap stamp), then 25 s for every read on the audio tick.
+    now_values = itertools.chain([0.0, 0.0, 0.0], itertools.repeat(25.0))
     live = _FakeLive([InputTranscript("first turn"), AudioOut(b"\x00\x00" * 240)])
     log = _FakeLog()
     b = _bridge(

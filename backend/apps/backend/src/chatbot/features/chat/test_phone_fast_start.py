@@ -22,7 +22,11 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
 from chatbot.features.chat.phone.caller_context import CallerContext, sign_caller
-from chatbot.features.chat.router import _GREETING_PROMPT, build_chat_router
+from chatbot.features.chat.router import (
+    _GREETING_PROMPT,
+    _KB_FILLER_INSTRUCTION,
+    build_chat_router,
+)
 from chatbot.features.demo import personas
 from chatbot.platform.config import Settings
 from chatbot.platform.server import create_app
@@ -165,8 +169,20 @@ def _start(params: dict[str, str]) -> dict[str, Any]:
 FORM = {"CallSid": "CA1", "From": PHONE}
 
 
+class _FlakyTts(_Tts):
+    """Down for the first synthesis (the startup prime), up afterwards."""
+
+    async def synthesize_mulaw8k(self, text: str, language_code: str = "en-US") -> bytes:
+        self.calls.append((text, language_code))
+        if len(self.calls) == 1:
+            raise RuntimeError("tts down")
+        return self.audio or b""
+
+
 def test_cold_notice_cache_keeps_the_say_and_warms_the_audio() -> None:
-    tts = _Tts(b"\xff" * 16000)
+    # 2026-11-16: the notice is primed at startup, so the cache is only cold
+    # when that synthesis failed -- the first call then still gets <Say>.
+    tts = _FlakyTts(b"\xff" * 16000)
     with TestClient(_app(_settings(), _Service(), tts, {})) as client:
         first = _incoming(client, FORM)
         assert f"<Say>{NOTICE}</Say>" in first  # PDPA: never silent
@@ -174,7 +190,7 @@ def test_cold_notice_cache_keeps_the_say_and_warms_the_audio() -> None:
         second = _incoming(client, {**FORM, "CallSid": "CA2"})
     assert "<Say>" not in second
     assert _params(second)["notice"] == "stream"
-    assert tts.calls == [(NOTICE, "en-US")]
+    assert tts.calls == [(NOTICE, "en-US"), (NOTICE, "en-US")]
 
 
 def test_flag_off_is_the_old_twiml() -> None:
@@ -358,3 +374,110 @@ def test_without_fast_start_the_first_reply_is_personal() -> None:
     greetings, instruction = _greetings(_settings(phone_fast_start_enabled=False), _Service())
     assert greetings == []  # the caller speaks first
     assert "Be personal from your first sentence" in instruction and "Hi Ahmad" in instruction
+
+
+# Live evidence 15 Nov 2026: Twilio Media Streams sends {"event":"connected"}
+# BEFORE "start". The stream treated "connected" as the start frame, so the
+# CallSid, the prefetched caller lookup and the notice request were all lost:
+# a recognised web call-as caller (Ahmad) was asked for their number, and a
+# cached PDPA notice was never played.
+CONNECTED = {"event": "connected", "protocol": "Call", "version": "1.0.0"}
+
+
+def test_connected_frame_first_still_recognises_the_web_call_as_caller() -> None:
+    svc = _Service()
+    cap: dict[str, Any] = {}
+    form = {"CallSid": "CA1", "From": "client:proton-web-caller", "callAs": PHONE}
+    with TestClient(_app(_settings(), svc, _Tts(None), cap)) as client:
+        params = _params(_incoming(client, form))
+        with client.websocket_connect("/voice/phone/stream") as ws:
+            ws.send_json(CONNECTED)
+            ws.send_json(_start(params))
+            ws.send_json(MEDIA)
+    # the /incoming prefetch was used: one lookup only
+    assert svc.lookups == [(PHONE, "web_call_as")]
+    assert "Hi Ahmad" in cap["instruction"]
+    assert "cannot see the caller's phone number" not in cap["instruction"]
+
+
+def test_connected_frame_first_still_plays_the_cached_notice() -> None:
+    svc = _Service()
+    cap: dict[str, Any] = {}
+    tts = _Tts(b"\xff" * 8000)  # 1 s
+    with TestClient(_app(_settings(), svc, tts, cap)) as client:
+        _incoming(client, {**FORM, "CallSid": "CA0"})  # warms the notice
+        params = _params(_incoming(client, FORM))
+        assert params.get("notice") == "stream"
+        with client.websocket_connect("/voice/phone/stream") as ws:
+            ws.send_json(CONNECTED)
+            ws.send_json(_start(params))
+            frames = [ws.receive_json() for _ in range(4)]
+            ws.send_json({"event": "mark", "streamSid": "S1", "mark": {"name": "pdpa_notice"}})
+            ws.send_json(MEDIA)
+    assert [f["event"] for f in frames] == ["media", "media", "media", "mark"]
+
+
+# --- 2026-11-16 call gaps: spoken filler before a knowledge lookup ------------
+
+
+def _stream_instruction(settings: Settings) -> dict[str, Any]:
+    cap: dict[str, Any] = {}
+    params = {
+        "caller": PHONE,
+        "caller_source": "caller_id",
+        "caller_sig": sign_caller(TOKEN, "CA1", "caller_id", PHONE),
+    }
+    with (
+        TestClient(_app(settings, _Service(), _Tts(None), cap)) as client,
+        client.websocket_connect("/voice/phone/stream") as ws,
+    ):
+        ws.send_json(_start(params))
+        ws.send_json(MEDIA)
+    return cap
+
+
+def test_filler_line_only_with_the_flag() -> None:
+    off = _stream_instruction(_settings())["instruction"]
+    on = _stream_instruction(_settings(phone_kb_filler_enabled=True))["instruction"]
+    assert _KB_FILLER_INSTRUCTION not in off
+    assert _KB_FILLER_INSTRUCTION in on
+    # the flag adds exactly the filler line, right after the kb_search sentence
+    assert on.replace(_KB_FILLER_INSTRUCTION, "") == off
+    assert "Proton knowledge base before giving facts. " + _KB_FILLER_INSTRUCTION in on
+
+
+def test_filler_adds_no_injected_turn() -> None:
+    live = _stream_instruction(_settings(phone_kb_filler_enabled=True))["live"]
+    assert live.text_hints == []
+    assert len(live.greetings) <= 1
+
+
+# --- 2026-11-16 call gaps: the notice is ready on the first call -------------
+
+
+def test_first_call_after_startup_gets_the_streamed_notice() -> None:
+    tts = _Tts(b"\xff" * 8000)
+    with TestClient(_app(_settings(), _Service(), tts, {})) as client:  # startup runs here
+        params = _params(_incoming(client, FORM))
+    assert params.get("notice") == "stream"  # before: the FIRST call got <Say>
+    assert tts.calls == [(NOTICE, "en-US")]  # synthesised exactly once
+
+
+def test_startup_warm_is_skipped_without_fast_start_or_notice() -> None:
+    for settings in (
+        _settings(phone_fast_start_enabled=False),
+        _settings(phone_recording_announcement=""),
+        _settings(phone_recording_enabled=False),
+    ):
+        tts = _Tts(b"\xff" * 8000)
+        with TestClient(_app(settings, _Service(), tts, {})):
+            pass
+        assert tts.calls == []
+
+
+def test_startup_warm_never_raises() -> None:
+    tts = _Tts(None)
+    with TestClient(_app(_settings(), _Service(), tts, {})) as client:
+        assert len(tts.calls) == 1  # one startup attempt, not one per handler copy
+        xml = _incoming(client, FORM)
+    assert f"<Say>{NOTICE}</Say>" in xml

@@ -72,6 +72,18 @@ class AnnouncementAudio:
         except RuntimeError:  # no running loop (sync caller): stay cold
             coro.close()
 
+    async def prime(self, text: str) -> None:
+        """Synthesise ``text`` now and return once it is cached (or failed),
+        so the first call after startup already streams the notice. Awaits a
+        warm() already in flight instead of starting a second synthesis.
+        Never raises; the caller bounds how long it waits."""
+        if self._synth is None or not text or self.get(text) is not None:
+            return
+        if self._task is not None and not self._task.done():
+            await self._task
+            return
+        await self._run(text)
+
     async def _run(self, text: str) -> None:
         if self._synth is None:
             return

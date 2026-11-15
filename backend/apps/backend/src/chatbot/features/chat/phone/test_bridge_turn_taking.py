@@ -18,8 +18,10 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any
 
+import pytest
 from structlog.testing import capture_logs
 
+import chatbot.features.chat.phone.bridge as bridge_mod
 from chatbot.features.chat.phone.bridge import PhoneBridge, is_unclear_transcript
 from chatbot.features.chat.phone.handoff_target import HandoffTarget
 from chatbot.features.chat.phone.live_events import (
@@ -28,6 +30,7 @@ from chatbot.features.chat.phone.live_events import (
     Interrupted,
     LiveEvent,
     OutputTranscript,
+    ToolCall,
     TurnComplete,
 )
 from chatbot.features.chat.phone.test_bridge import _FakeKnowledge, _FakeLog
@@ -80,6 +83,7 @@ def _bridge(
     settings: Settings | None = None,
     clock: _Clock | None = None,
     log: _FakeLog | None = None,
+    knowledge: Any = None,
     **kw: Any,
 ) -> PhoneBridge:
     async def send(msg: dict[str, Any]) -> None:
@@ -87,7 +91,7 @@ def _bridge(
 
     b = PhoneBridge(
         live,  # type: ignore[arg-type]
-        _FakeKnowledge(),
+        knowledge or _FakeKnowledge(),
         log or _FakeLog(),  # type: ignore[arg-type]
         send,
         settings or Settings(_env_file=None, phone_language_nudge_enabled=True),
@@ -584,3 +588,102 @@ async def test_watchdog_counts_from_when_the_notice_was_sent() -> None:
     await asyncio.sleep(0.3)
     assert b._announcement_done.is_set()  # expired ~0.1 s after start, not 5.1 s
     await b.finalize()
+
+
+# --- 2026-11-16 call gaps: per-turn and per-tool timing -----------------------
+
+
+def _turns(logs: list[dict[str, Any]]) -> list[tuple[int, int]]:
+    return [(e["turn"], e["gap_ms"]) for e in logs if e["event"] == "phone_turn_timing"]
+
+
+async def test_turn_gap_is_last_caller_fragment_to_first_model_audio() -> None:
+    clock = _Clock()
+    live = _Live(
+        [
+            InputTranscript("How often"),
+            lambda: setattr(clock, "t", clock.t + 0.5),
+            InputTranscript(" should my X50 be serviced?"),
+            lambda: setattr(clock, "t", clock.t + 1.8),
+            AUDIO,
+            AUDIO,
+            TurnComplete(),
+        ]
+    )
+    with capture_logs() as logs:
+        await _bridge(live, [], clock=clock).pump()
+    assert _turns(logs) == [(1, 1800)]
+
+
+async def test_greeting_logs_no_turn_gap() -> None:
+    clock = _Clock()
+    live = _Live([AUDIO, lambda: setattr(clock, "t", clock.t + 1.0), AUDIO, TurnComplete()])
+    with capture_logs() as logs:
+        await _bridge(live, [], clock=clock).pump()
+    assert _turns(logs) == []
+
+
+async def test_turn_gap_resets_on_interruption() -> None:
+    clock = _Clock()
+    live = _Live(
+        [
+            InputTranscript("Hello"),
+            lambda: setattr(clock, "t", clock.t + 1.0),
+            AUDIO,
+            lambda: setattr(clock, "t", clock.t + 2.0),
+            # barge-in: the cancel arrives, then the caller's words (which
+            # end the drop window)
+            Interrupted(),
+            InputTranscript("wait, actually"),
+            lambda: setattr(clock, "t", clock.t + 0.4),
+            AUDIO,
+        ]
+    )
+    with capture_logs() as logs:
+        await _bridge(live, [], clock=clock).pump()
+    assert _turns(logs) == [(1, 1000), (2, 400)]
+
+
+class _SlowKnowledge:
+    def __init__(self, clock: _Clock, seconds: float, *, raises: bool = False) -> None:
+        self._clock, self._seconds, self._raises = clock, seconds, raises
+
+    async def search_kb(self, query: str, limit: int = 2) -> list[Any]:
+        self._clock.t += self._seconds
+        if self._raises:
+            raise RuntimeError("vertex down")
+        return []
+
+
+def _tools(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {k: e[k] for k in ("name", "ms", "outcome")}
+        for e in logs
+        if e["event"] == "phone_tool_timing"
+    ]
+
+
+async def test_tool_timing_is_logged_for_kb_search() -> None:
+    clock = _Clock()
+    live = _Live([ToolCall("c1", "kb_search", {"query": "x"})])
+    with capture_logs() as logs:
+        await _bridge(live, [], clock=clock, knowledge=_SlowKnowledge(clock, 1.2)).pump()
+    assert _tools(logs) == [{"name": "kb_search", "ms": 1200, "outcome": "ok"}]
+    assert all("query" not in e for e in logs if e["event"] == "phone_tool_timing")
+
+
+async def test_tool_that_raises_is_still_answered_and_logged_as_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+    live = _Live([ToolCall("c1", "submit_csat", {"score": "5"})])
+
+    def boom(_args: Any) -> None:
+        raise RuntimeError("bad")
+
+    monkeypatch.setattr(bridge_mod, "parse_csat_score", boom)
+    with capture_logs() as logs:
+        await _bridge(live, [], clock=clock).pump()
+    assert _tools(logs) == [{"name": "submit_csat", "ms": 0, "outcome": "error"}]
+    assert [(c, n) for c, n, _ in live.tool_responses] == [("c1", "submit_csat")]
+    assert "error" in live.tool_responses[0][2]

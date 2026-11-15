@@ -284,6 +284,12 @@ class PhoneBridge:
         self._timing = timing
         self._stream_started_at = stream_started_at
         self._timing_logged = False
+        # 2026-11-16 call gaps: the silence a caller hears after they stop
+        # talking (last caller fragment -> next model audio), one
+        # phone_turn_timing line per assistant turn. None = no caller words
+        # pending (the greeting, or the gap already logged).
+        self._last_caller_at: float | None = None
+        self._turn_no = 0
         # 2026-11-09 caller context. `caller_service` is passed only when
         # phone_caller_context_enabled is on; None keeps every code path
         # below exactly as it was (anonymous ticket, no caller tools, the old
@@ -1056,6 +1062,15 @@ class PhoneBridge:
             return
         if not self._timing_logged and self._stream_started_at is not None:
             self._log_timing(round((self._now() - self._stream_started_at) * 1000))
+        if self._last_caller_at is not None:
+            self._turn_no += 1
+            _log.info(
+                "phone_turn_timing",
+                call_sid=self.call_sid,
+                turn=self._turn_no,
+                gap_ms=round((self._now() - self._last_caller_at) * 1000),
+            )
+            self._last_caller_at = None
         mulaw = pcm24k_to_mulaw8k(event.pcm)
         frame: dict[str, object] = {
             "event": "media",
@@ -1347,6 +1362,32 @@ class PhoneBridge:
             self.transcript.append((role, text))
 
     async def _handle_tool_call(self, event: ToolCall) -> None:
+        """Answer one tool call, timed (phone_tool_timing: name, ms, outcome;
+        never the arguments). A tool that raises is still answered with an
+        error -- an unanswered tool call leaves the model, and the caller, in
+        silence for the rest of the call."""
+        started = self._now()
+        outcome = "ok"
+        try:
+            await self._dispatch_tool_call(event)
+        except Exception as exc:
+            outcome = "error"
+            _log.warning(
+                "phone_tool_failed", name=event.name, call_id=event.id, error_type=type(exc).__name__
+            )
+            await self._live.send_tool_response(
+                event.id, event.name, {"error": f"tool failed: {event.name}"}
+            )
+        finally:
+            _log.info(
+                "phone_tool_timing",
+                call_sid=self.call_sid,
+                name=event.name,
+                ms=round((self._now() - started) * 1000),
+                outcome=outcome,
+            )
+
+    async def _dispatch_tool_call(self, event: ToolCall) -> None:
         if event.name == "kb_search":
             result = await dispatch_kb_search(event.args, self._knowledge)
             await self._live.send_tool_response(event.id, event.name, result)
@@ -1518,6 +1559,7 @@ class PhoneBridge:
                 # Any caller transcript means the caller's new turn: the
                 # cancelled answer's tail is behind us.
                 self._drop_until = None
+                self._last_caller_at = self._now()
                 self._add_user_fragment(event.text)
                 # phone_language_nudge_enabled is inert since 2026-11-09: the
                 # reminder went out as send_realtime_input(text=...), which the

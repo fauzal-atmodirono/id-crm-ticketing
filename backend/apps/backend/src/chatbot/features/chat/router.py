@@ -485,6 +485,15 @@ def _ms(seconds: float) -> int:
     return round(seconds * 1000)
 
 
+# 2026-11-16 call gaps (PHONE_KB_FILLER_ENABLED): the caller hears a short
+# "let me check" instead of 1-3 s of silence while kb_search runs. It lives in
+# the system instruction only -- never as injected realtime text, which the
+# Live API treats as a caller turn (the 27 Oct double-answer bug).
+_KB_FILLER_INSTRUCTION = (
+    "Before you call kb_search, first say one short phrase in the caller's language, "
+    "such as 'Let me check that for you.', then call it; never say it twice in one "
+    "answer and never use it when you answer without kb_search. "
+)
 _HANDOFF_GUARDRAILS = (
     "NEVER hand off because you could not hear or understand the caller. Phone audio "
     "is lossy and callers switch languages mid-sentence, so when a turn is unclear, ASK "
@@ -2114,6 +2123,7 @@ class ChatRouter:
                 + build_language_instruction(start_language)
                 + "Use the kb_search tool to ground answers in the "
                 "Proton knowledge base before giving facts. "
+                + (_KB_FILLER_INSTRUCTION if settings.phone_kb_filler_enabled else "")
                 + caller_instruction
                 + _HANDOFF_GUARDRAILS
                 + "If you cannot resolve the caller's "

@@ -22,7 +22,11 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
 from chatbot.features.chat.phone.caller_context import CallerContext, sign_caller
-from chatbot.features.chat.router import _GREETING_PROMPT, build_chat_router
+from chatbot.features.chat.router import (
+    _GREETING_PROMPT,
+    _KB_FILLER_INSTRUCTION,
+    build_chat_router,
+)
 from chatbot.features.demo import personas
 from chatbot.platform.config import Settings
 from chatbot.platform.server import create_app
@@ -399,3 +403,38 @@ def test_connected_frame_first_still_plays_the_cached_notice() -> None:
             ws.send_json({"event": "mark", "streamSid": "S1", "mark": {"name": "pdpa_notice"}})
             ws.send_json(MEDIA)
     assert [f["event"] for f in frames] == ["media", "media", "media", "mark"]
+
+
+# --- 2026-11-16 call gaps: spoken filler before a knowledge lookup ------------
+
+
+def _stream_instruction(settings: Settings) -> dict[str, Any]:
+    cap: dict[str, Any] = {}
+    params = {
+        "caller": PHONE,
+        "caller_source": "caller_id",
+        "caller_sig": sign_caller(TOKEN, "CA1", "caller_id", PHONE),
+    }
+    with (
+        TestClient(_app(settings, _Service(), _Tts(None), cap)) as client,
+        client.websocket_connect("/voice/phone/stream") as ws,
+    ):
+        ws.send_json(_start(params))
+        ws.send_json(MEDIA)
+    return cap
+
+
+def test_filler_line_only_with_the_flag() -> None:
+    off = _stream_instruction(_settings())["instruction"]
+    on = _stream_instruction(_settings(phone_kb_filler_enabled=True))["instruction"]
+    assert _KB_FILLER_INSTRUCTION not in off
+    assert _KB_FILLER_INSTRUCTION in on
+    # the flag adds exactly the filler line, right after the kb_search sentence
+    assert on.replace(_KB_FILLER_INSTRUCTION, "") == off
+    assert "Proton knowledge base before giving facts. " + _KB_FILLER_INSTRUCTION in on
+
+
+def test_filler_adds_no_injected_turn() -> None:
+    live = _stream_instruction(_settings(phone_kb_filler_enabled=True))["live"]
+    assert live.text_hints == []
+    assert len(live.greetings) <= 1

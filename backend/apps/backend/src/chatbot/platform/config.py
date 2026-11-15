@@ -497,6 +497,9 @@ class Settings(BaseSettings):
     # 0 = no cap (today's behaviour). Over the cap the tool answers with no
     # results and the AI answers without the KB instead of staying silent.
     phone_kb_search_timeout_seconds: float = 0.0
+    # The phone AI says a short "let me check" before a kb_search lookup
+    # instead of going silent. False = today's system instruction, unchanged.
+    phone_kb_filler_enabled: bool = False
     gemini_live_voice: str = "Kore"
     # Optional output language hint (e.g. "ms-MY" for Bahasa Melayu). Empty = let
     # the model auto-detect. Only honored by half-cascade Live models; native-audio

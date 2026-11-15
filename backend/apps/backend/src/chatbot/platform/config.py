@@ -493,6 +493,10 @@ class Settings(BaseSettings):
     # API's NO_INTERRUPTION: the assistant always finishes its sentence --
     # for a line so noisy that LOW sensitivity still cuts it off.
     gemini_live_barge_in_enabled: bool = True
+    # 2026-11-16 call gaps: cap on the phone's kb_search tool, in seconds.
+    # 0 = no cap (today's behaviour). Over the cap the tool answers with no
+    # results and the AI answers without the KB instead of staying silent.
+    phone_kb_search_timeout_seconds: float = 0.0
     gemini_live_voice: str = "Kore"
     # Optional output language hint (e.g. "ms-MY" for Bahasa Melayu). Empty = let
     # the model auto-detect. Only honored by half-cascade Live models; native-audio

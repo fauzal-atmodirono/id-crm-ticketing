@@ -1369,7 +1369,7 @@ class PhoneBridge:
         started = self._now()
         outcome = "ok"
         try:
-            await self._dispatch_tool_call(event)
+            outcome = await self._dispatch_tool_call(event)
         except Exception as exc:
             outcome = "error"
             _log.warning(
@@ -1387,11 +1387,18 @@ class PhoneBridge:
                 outcome=outcome,
             )
 
-    async def _dispatch_tool_call(self, event: ToolCall) -> None:
+    async def _dispatch_tool_call(self, event: ToolCall) -> str:
+        """Run the tool and answer it; returns the phone_tool_timing outcome
+        ("ok", or kb_search's "timeout"/"error" status)."""
         if event.name == "kb_search":
-            result = await dispatch_kb_search(event.args, self._knowledge)
+            result = await dispatch_kb_search(
+                event.args,
+                self._knowledge,
+                timeout_seconds=self._settings.phone_kb_search_timeout_seconds,
+            )
             await self._live.send_tool_response(event.id, event.name, result)
-        elif event.name == "request_human_handoff":
+            return str(result.get("status") or "ok")
+        if event.name == "request_human_handoff":
             self.handoff = {
                 "reason": str(event.args.get("reason") or ""),
                 "summary": str(event.args.get("summary") or ""),
@@ -1432,6 +1439,7 @@ class PhoneBridge:
             await self._live.send_tool_response(
                 event.id, event.name, {"error": f"unknown tool: {event.name}"}
             )
+        return "ok"
 
     async def _attempt_transfer(self) -> str:  # noqa: PLR0911 -- each early return is a distinct, documented fallback reason
         """Package C Task 6: try to redirect the live call into a real

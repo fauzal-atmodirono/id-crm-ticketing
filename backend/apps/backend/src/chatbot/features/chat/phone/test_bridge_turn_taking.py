@@ -687,3 +687,28 @@ async def test_tool_that_raises_is_still_answered_and_logged_as_error(
     assert _tools(logs) == [{"name": "submit_csat", "ms": 0, "outcome": "error"}]
     assert [(c, n) for c, n, _ in live.tool_responses] == [("c1", "submit_csat")]
     assert "error" in live.tool_responses[0][2]
+
+
+class _HangingKnowledge:
+    async def search_kb(self, query: str, limit: int = 2) -> list[Any]:
+        await asyncio.sleep(0.5)
+        return []
+
+
+async def test_kb_search_over_the_cap_is_answered_and_logged_as_timeout() -> None:
+    live = _Live([ToolCall("c1", "kb_search", {"query": "x"})])
+    settings = Settings(_env_file=None, phone_kb_search_timeout_seconds=0.05)
+    with capture_logs() as logs:
+        await _bridge(live, [], settings=settings, knowledge=_HangingKnowledge()).pump()
+    assert [t["outcome"] for t in _tools(logs)] == ["timeout"]
+    assert live.tool_responses == [("c1", "kb_search", {"results": [], "status": "timeout"})]
+
+
+async def test_kb_search_failure_is_logged_as_error() -> None:
+    clock = _Clock()
+    live = _Live([ToolCall("c1", "kb_search", {"query": "x"})])
+    knowledge = _SlowKnowledge(clock, 0.3, raises=True)
+    with capture_logs() as logs:
+        await _bridge(live, [], clock=clock, knowledge=knowledge).pump()
+    assert _tools(logs) == [{"name": "kb_search", "ms": 300, "outcome": "error"}]
+    assert live.tool_responses == [("c1", "kb_search", {"results": [], "status": "error"})]

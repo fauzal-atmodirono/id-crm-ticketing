@@ -169,8 +169,20 @@ def _start(params: dict[str, str]) -> dict[str, Any]:
 FORM = {"CallSid": "CA1", "From": PHONE}
 
 
+class _FlakyTts(_Tts):
+    """Down for the first synthesis (the startup prime), up afterwards."""
+
+    async def synthesize_mulaw8k(self, text: str, language_code: str = "en-US") -> bytes:
+        self.calls.append((text, language_code))
+        if len(self.calls) == 1:
+            raise RuntimeError("tts down")
+        return self.audio or b""
+
+
 def test_cold_notice_cache_keeps_the_say_and_warms_the_audio() -> None:
-    tts = _Tts(b"\xff" * 16000)
+    # 2026-11-16: the notice is primed at startup, so the cache is only cold
+    # when that synthesis failed -- the first call then still gets <Say>.
+    tts = _FlakyTts(b"\xff" * 16000)
     with TestClient(_app(_settings(), _Service(), tts, {})) as client:
         first = _incoming(client, FORM)
         assert f"<Say>{NOTICE}</Say>" in first  # PDPA: never silent
@@ -178,7 +190,7 @@ def test_cold_notice_cache_keeps_the_say_and_warms_the_audio() -> None:
         second = _incoming(client, {**FORM, "CallSid": "CA2"})
     assert "<Say>" not in second
     assert _params(second)["notice"] == "stream"
-    assert tts.calls == [(NOTICE, "en-US")]
+    assert tts.calls == [(NOTICE, "en-US"), (NOTICE, "en-US")]
 
 
 def test_flag_off_is_the_old_twiml() -> None:
@@ -438,3 +450,34 @@ def test_filler_adds_no_injected_turn() -> None:
     live = _stream_instruction(_settings(phone_kb_filler_enabled=True))["live"]
     assert live.text_hints == []
     assert len(live.greetings) <= 1
+
+
+# --- 2026-11-16 call gaps: the notice is ready on the first call -------------
+
+
+def test_first_call_after_startup_gets_the_streamed_notice() -> None:
+    tts = _Tts(b"\xff" * 8000)
+    with TestClient(_app(_settings(), _Service(), tts, {})) as client:  # startup runs here
+        params = _params(_incoming(client, FORM))
+    assert params.get("notice") == "stream"  # before: the FIRST call got <Say>
+    assert tts.calls == [(NOTICE, "en-US")]  # synthesised exactly once
+
+
+def test_startup_warm_is_skipped_without_fast_start_or_notice() -> None:
+    for settings in (
+        _settings(phone_fast_start_enabled=False),
+        _settings(phone_recording_announcement=""),
+        _settings(phone_recording_enabled=False),
+    ):
+        tts = _Tts(b"\xff" * 8000)
+        with TestClient(_app(settings, _Service(), tts, {})):
+            pass
+        assert tts.calls == []
+
+
+def test_startup_warm_never_raises() -> None:
+    tts = _Tts(None)
+    with TestClient(_app(_settings(), _Service(), tts, {})) as client:
+        assert len(tts.calls) == 1  # one startup attempt, not one per handler copy
+        xml = _incoming(client, FORM)
+    assert f"<Say>{NOTICE}</Say>" in xml

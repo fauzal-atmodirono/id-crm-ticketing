@@ -146,3 +146,45 @@ async def test_take_prunes_other_expired_entries() -> None:
     clock.t += 31  # CA2 now expired, CA3 not
     assert cache.take("CA3") is not None
     assert len(cache) == 0
+
+
+async def test_prime_synthesises_now_and_never_raises() -> None:
+    calls: list[str] = []
+
+    async def synth(text: str) -> bytes:
+        calls.append(text)
+        return b"\xff" * 800
+
+    audio = AnnouncementAudio(synth)
+    await audio.prime("n")
+    assert audio.get("n") == b"\xff" * 800  # ready without any extra loop turn
+    await audio.prime("n")  # cached: no second synthesis
+    assert calls == ["n"]
+
+    async def down(_text: str) -> bytes:
+        raise RuntimeError("tts down")
+
+    failing = AnnouncementAudio(down)
+    await failing.prime("n")  # does not raise
+    assert failing.get("n") is None
+    await AnnouncementAudio(None).prime("n")  # no synthesiser: a no-op
+
+
+async def test_prime_waits_for_a_warm_already_in_flight() -> None:
+    calls: list[str] = []
+    gate = asyncio.Event()
+
+    async def synth(text: str) -> bytes:
+        calls.append(text)
+        await gate.wait()
+        return b"\xff" * 800
+
+    audio = AnnouncementAudio(synth)
+    audio.warm("n")
+    await asyncio.sleep(0)
+    prime = asyncio.create_task(audio.prime("n"))
+    await asyncio.sleep(0)
+    gate.set()
+    await prime
+    assert audio.get("n") == b"\xff" * 800
+    assert calls == ["n"]

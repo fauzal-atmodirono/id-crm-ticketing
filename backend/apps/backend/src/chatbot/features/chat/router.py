@@ -489,6 +489,9 @@ def _ms(seconds: float) -> int:
 # "let me check" instead of 1-3 s of silence while kb_search runs. It lives in
 # the system instruction only -- never as injected realtime text, which the
 # Live API treats as a caller turn (the 27 Oct double-answer bug).
+# How long startup waits for the notice synthesis (2026-11-16 call gaps).
+_NOTICE_PRIME_TIMEOUT_SECONDS = 10
+
 _KB_FILLER_INSTRUCTION = (
     "Before you call kb_search, first say one short phrase in the caller's language, "
     "such as 'Let me check that for you.', then call it; never say it twice in one "
@@ -589,6 +592,13 @@ class ChatRouter:
             orchestrator._settings.phone_token_rate_window_seconds,
         )
         self.router = APIRouter(tags=["chat"])
+        # 2026-11-16 call gaps: the PDPA notice is synthesised before the app
+        # takes traffic, so the first call after a restart also gets the
+        # ~10 s-faster streamed notice instead of <Say>.
+        # FastAPI 0.137 runs an included router's startup handlers twice (its
+        # copy on the app plus the merged lifespan), hence the once-only flag.
+        self._notice_warm_started = False
+        self.router.add_event_handler("startup", self._warm_phone_notice)
 
         self.router.add_api_route("/webhooks/chatwoot", self.chatwoot_webhook, methods=["POST"])
         self.router.add_api_route("/webhooks/zendesk", self.zendesk_webhook, methods=["POST"])
@@ -1873,6 +1883,28 @@ class ChatRouter:
                 announcement = None
                 parameters = {**(parameters or {}), _NOTICE_PARAM: "stream"}
         return connect_stream_twiml(self._phone_wss_url(), announcement, parameters)
+
+    async def _warm_phone_notice(self) -> None:
+        """Startup: prime the notice audio when fast start would use it.
+        Bounded and never raises -- a TTS outage must not stop the app from
+        starting; calls then fall back to <Say> and warm the cache as before."""
+        if self._notice_warm_started:
+            return
+        self._notice_warm_started = True
+        settings = self.orchestrator._settings
+        if not (
+            settings.phone_fast_start_enabled
+            and settings.phone_recording_enabled
+            and settings.phone_recording_announcement
+        ):
+            return
+        try:
+            await asyncio.wait_for(
+                self._announcement_audio.prime(settings.phone_recording_announcement),
+                timeout=_NOTICE_PRIME_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            _log.warning("phone_announcement_prime_failed", error_type=type(exc).__name__)
 
     async def _caller_from_start(
         self, start_msg: dict[str, Any], prefetch: PrefetchEntry | None = None

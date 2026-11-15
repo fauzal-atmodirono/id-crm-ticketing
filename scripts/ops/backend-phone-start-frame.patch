@@ -1,0 +1,46 @@
+diff --git a/backend/apps/backend/src/chatbot/features/chat/router.py b/backend/apps/backend/src/chatbot/features/chat/router.py
+index a3803ff4..39d59a84 100644
+--- a/backend/apps/backend/src/chatbot/features/chat/router.py
++++ b/backend/apps/backend/src/chatbot/features/chat/router.py
+@@ -328,6 +328,31 @@ def _call_sid_from_start(msg: dict[str, Any]) -> str | None:
+     return None
+ 
+ 
++# Twilio Media Streams sends {"event": "connected"} BEFORE "start" (live
++# evidence 15 Nov 2026). Reading only the first frame took "connected" for
++# the start frame, which lost the CallSid, the /incoming prefetch, the signed
++# caller parameters and the notice request: a recognised caller was asked
++# for their number and a cached PDPA notice was never played. Skip the
++# frames before "start", bounded so a peer that never sends one cannot hold
++# the socket in this loop.
++_MAX_FRAMES_BEFORE_START = 5
++
++
++async def _receive_start_frame(websocket: WebSocket) -> dict[str, Any]:
++    """The Media Streams "start" frame, skipping "connected" (and any other
++    pre-start frame) up to ``_MAX_FRAMES_BEFORE_START``. The last frame read
++    is returned when no "start" arrives, so the call proceeds as before
++    (unknown caller) instead of failing."""
++    msg: dict[str, Any] = {}
++    for _ in range(_MAX_FRAMES_BEFORE_START + 1):
++        raw = json.loads(await websocket.receive_text())
++        msg = raw if isinstance(raw, dict) else {}
++        if msg.get("event") == "start" or isinstance(msg.get("start"), dict):
++            return msg
++    _log.warning("phone_stream_no_start_frame", frames=_MAX_FRAMES_BEFORE_START + 1)
++    return msg
++
++
+ def _card_caption(product: Any) -> str:
+     """Build the caption for a single WhatsApp image card (bold title + details)."""
+     caption = f"*{_sanitize_for_whatsapp(product.title)}*"
+@@ -1964,8 +1989,7 @@ class ChatRouter:
+             # wall-clock time as the previous order, just swapped -- bridge.
+             # stream_sid is still set (via bridge.handle_twilio below) before
+             # pump_task begins forwarding audio frames.
+-            start_raw = await websocket.receive_text()
+-            start_msg = json.loads(start_raw)
++            start_msg = await _receive_start_frame(websocket)
+             call_sid = _call_sid_from_start(start_msg)
+             prefetch = self._caller_prefetch.take(call_sid)
+             # 2026-11-09 fast start: play the PDPA notice FIRST, while the

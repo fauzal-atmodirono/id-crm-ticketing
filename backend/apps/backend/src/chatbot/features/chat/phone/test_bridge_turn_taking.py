@@ -712,3 +712,27 @@ async def test_kb_search_failure_is_logged_as_error() -> None:
         await _bridge(live, [], clock=clock, knowledge=knowledge).pump()
     assert _tools(logs) == [{"name": "kb_search", "ms": 300, "outcome": "error"}]
     assert live.tool_responses == [("c1", "kb_search", {"results": [], "status": "error"})]
+
+
+async def test_fragment_while_the_assistant_speaks_logs_no_extra_turn() -> None:
+    # final review: a late transcription fragment (or line noise) during the
+    # answer must not start a phantom ~20 ms "turn"
+    clock = _Clock()
+    live = _Live(
+        [
+            InputTranscript("When is my service due?"),
+            lambda: setattr(clock, "t", clock.t + 1.2),
+            AUDIO,
+            lambda: setattr(clock, "t", clock.t + 0.3),
+            InputTranscript(" please"),
+            lambda: setattr(clock, "t", clock.t + 0.02),
+            AUDIO,
+            TurnComplete(),
+            InputTranscript("Thanks"),
+            lambda: setattr(clock, "t", clock.t + 0.9),
+            AUDIO,
+        ]
+    )
+    with capture_logs() as logs:
+        await _bridge(live, [], clock=clock).pump()
+    assert _turns(logs) == [(1, 1200), (2, 900)]

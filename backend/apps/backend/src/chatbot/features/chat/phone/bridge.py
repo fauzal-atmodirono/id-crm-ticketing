@@ -290,6 +290,10 @@ class PhoneBridge:
         # pending (the greeting, or the gap already logged).
         self._last_caller_at: float | None = None
         self._turn_no = 0
+        # True from the assistant's first forwarded audio until TurnComplete /
+        # Interrupted: fragments arriving meanwhile (late transcription, line
+        # noise) are not a new caller turn and must not log a phantom gap.
+        self._assistant_speaking = False
         # 2026-11-09 caller context. `caller_service` is passed only when
         # phone_caller_context_enabled is on; None keeps every code path
         # below exactly as it was (anonymous ticket, no caller tools, the old
@@ -1071,6 +1075,7 @@ class PhoneBridge:
                 gap_ms=round((self._now() - self._last_caller_at) * 1000),
             )
             self._last_caller_at = None
+        self._assistant_speaking = True
         mulaw = pcm24k_to_mulaw8k(event.pcm)
         frame: dict[str, object] = {
             "event": "media",
@@ -1559,15 +1564,18 @@ class PhoneBridge:
             if isinstance(event, AudioOut):
                 await self._forward_model_audio(event)
             elif isinstance(event, Interrupted):
+                self._assistant_speaking = False
                 await self._on_interrupted()
             elif isinstance(event, TurnComplete):
+                self._assistant_speaking = False
                 self._drop_until = None
                 self._assistant_turn_ended = True
             elif isinstance(event, InputTranscript):
                 # Any caller transcript means the caller's new turn: the
                 # cancelled answer's tail is behind us.
                 self._drop_until = None
-                self._last_caller_at = self._now()
+                if not self._assistant_speaking:
+                    self._last_caller_at = self._now()
                 self._add_user_fragment(event.text)
                 # phone_language_nudge_enabled is inert since 2026-11-09: the
                 # reminder went out as send_realtime_input(text=...), which the
